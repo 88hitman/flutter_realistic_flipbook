@@ -1,0 +1,15 @@
+name: flutter_flipbook_example
+publish_to: "none"
+
+environment:
+  sdk: ">=3.3.0 <4.0.0"
+  flutter: ">=3.22.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_flipbook:
+    path: ..
+
+flutter:
+  uses-material-design: true
