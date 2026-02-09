@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_realistic_flipbook/flutter_realistic_flipbook.dart';
 
 void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+  SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
   runApp(const DemoApp());
 }
 
@@ -32,18 +35,19 @@ class _DemoScreenState extends State<DemoScreen> {
 
   late final pages = <FlipbookPage?>[
     null,
-    _page('flipbook-1'),
-    _page('flipbook-2'),
-    _page('flipbook-3'),
-    _page('flipbook-4'),
-    _page('flipbook-5'),
-    _page('flipbook-6'),
+    _page(1),
+    _page(2),
+    _page(3),
+    _page(4),
+    _page(5),
+    _page(6),
   ];
 
-  static FlipbookPage _page(String id) {
+  static FlipbookPage _page(int id) {
+    final image = AssetImage('assets/images/$id.jpg');
     return FlipbookPage(
-      image: NetworkImage('https://picsum.photos/seed/$id/1200/1800'),
-      hiResImage: NetworkImage('https://picsum.photos/seed/$id-hq/2400/3600'),
+      image: image,
+      hiResImage: image,
     );
   }
 
@@ -51,56 +55,24 @@ class _DemoScreenState extends State<DemoScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFFF4EFE6),
-      appBar: AppBar(
-        title: const Text('Realistic Flipbook'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.remove),
-            onPressed: controller.zoomOut,
-          ),
-          IconButton(
-            icon: const Icon(Icons.add),
-            onPressed: controller.zoomIn,
-          ),
-        ],
-      ),
-      body: Padding(
-        padding: const EdgeInsets.all(12),
-        child: RealisticFlipbook(
-          controller: controller,
-          pages: pages,
-          nPolygons: 10,
-          perspective: 2400,
-          ambient: 0.4,
-          gloss: 0.6,
-          zooms: const [1, 2, 4],
-          flipDuration: const Duration(milliseconds: 1000),
-          zoomDuration: const Duration(milliseconds: 500),
-          clickToZoom: true,
-          dragToFlip: true,
-          dragToScroll: true,
-          wheel: FlipbookWheelMode.scroll,
-        ),
-      ),
-      bottomNavigationBar: SafeArea(
+      body: SafeArea(
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(12, 6, 12, 12),
-          child: Row(
-            children: [
-              Expanded(
-                child: FilledButton.tonal(
-                  onPressed: controller.flipLeft,
-                  child: const Text('Page précédente'),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: FilledButton(
-                  onPressed: controller.flipRight,
-                  child: const Text('Page suivante'),
-                ),
-              ),
-            ],
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          child: RealisticFlipbook(
+            controller: controller,
+            pages: pages,
+            nPolygons: 14,
+            perspective: 2200,
+            ambient: 0.72,
+            gloss: 0.25,
+            clipToViewport: false,
+            zooms: const [1, 2, 4],
+            flipDuration: const Duration(milliseconds: 1300),
+            zoomDuration: const Duration(milliseconds: 500),
+            clickToZoom: true,
+            dragToFlip: true,
+            dragToScroll: true,
+            wheel: FlipbookWheelMode.scroll,
           ),
         ),
       ),

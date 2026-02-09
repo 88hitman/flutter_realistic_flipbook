@@ -1,3 +1,10 @@
+## 0.0.2
+
+- Add demo GIF preview in README.
+- Improve example fullscreen layout for capture/demo.
+- Fix and polish realistic page flip rendering behavior.
+  
+
 ## 0.0.1
 
 Initial public release of `flutter_realistic_flipbook`.

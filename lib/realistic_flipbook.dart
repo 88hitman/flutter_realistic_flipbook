@@ -78,6 +78,7 @@ class RealisticFlipbook extends StatefulWidget {
     this.dragToFlip = true,
     this.dragToScroll = true,
     this.wheel = FlipbookWheelMode.scroll,
+    this.clipToViewport = true,
     this.paperColor = Colors.white,
     this.mushafChrome = false,
     this.mushafTopInsetRatio = 0.075,
@@ -128,6 +129,7 @@ class RealisticFlipbook extends StatefulWidget {
   final bool dragToFlip;
   final bool dragToScroll;
   final FlipbookWheelMode wheel;
+  final bool clipToViewport;
 
   final Color paperColor;
   final bool mushafChrome;
@@ -1180,20 +1182,33 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
 
         return Listener(
           onPointerSignal: _onPointerSignal,
-          child: ClipRect(
-            child: Transform.translate(
-              offset: Offset(-_scrollLeft, -_scrollTop),
-              child: Transform.scale(
-                alignment: Alignment.topLeft,
-                scale: _zoom,
-                child: SizedBox(
-                  width: _viewWidth,
-                  height: _viewHeight,
-                  child: content,
+          child: widget.clipToViewport
+              ? ClipRect(
+                  child: Transform.translate(
+                    offset: Offset(-_scrollLeft, -_scrollTop),
+                    child: Transform.scale(
+                      alignment: Alignment.topLeft,
+                      scale: _zoom,
+                      child: SizedBox(
+                        width: _viewWidth,
+                        height: _viewHeight,
+                        child: content,
+                      ),
+                    ),
+                  ),
+                )
+              : Transform.translate(
+                  offset: Offset(-_scrollLeft, -_scrollTop),
+                  child: Transform.scale(
+                    alignment: Alignment.topLeft,
+                    scale: _zoom,
+                    child: SizedBox(
+                      width: _viewWidth,
+                      height: _viewHeight,
+                      child: content,
+                    ),
+                  ),
                 ),
-              ),
-            ),
-          ),
         );
       },
     );
