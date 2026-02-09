@@ -1,4 +1,4 @@
-name: flutter_flipbook_example
+name: flutter_realistic_flipbook_example
 publish_to: "none"
 
 environment:
@@ -8,7 +8,7 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  flutter_flipbook:
+  flutter_realistic_flipbook:
     path: ..
 
 flutter:

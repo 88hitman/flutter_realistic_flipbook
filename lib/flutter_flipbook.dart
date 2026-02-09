@@ -1,1 +1,1 @@
-export 'realistic_flipbook.dart';
+export 'flutter_realistic_flipbook.dart';

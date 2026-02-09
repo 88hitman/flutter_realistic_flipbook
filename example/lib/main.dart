@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_flipbook/flutter_flipbook.dart';
+import 'package:flutter_realistic_flipbook/flutter_realistic_flipbook.dart';
 
 void main() {
   runApp(const DemoApp());
