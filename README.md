@@ -4,6 +4,10 @@ A realistic 3D page-turn widget for Flutter, inspired by the interaction and ren
 
 This package is designed for immersive reader experiences (books, magazines, catalogs, Mushaf-like pages) where the page turn must feel physical, not just a flat slide transition.
 
+## Preview
+
+![Realistic flipbook demo](assets/preview/realistic-flipbook-demo.gif)
+
 ## Highlights
 
 - Real-time 3D page curvature using polygon strips (`nPolygons`)
