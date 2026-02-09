@@ -2,7 +2,7 @@
 
 A realistic 3D page-turn widget for Flutter, inspired by the interaction and rendering model of `flipbook-vue`.
 
-This package is designed for immersive reader experiences (books, magazines, catalogs, Mushaf-like pages) where the page turn must feel physical, not just a flat slide transition.
+This package is designed for immersive reader experiences (books, magazines, catalogs) where the page turn must feel physical, not just a flat slide transition.
 
 ## Preview
 
@@ -15,7 +15,7 @@ This package is designed for immersive reader experiences (books, magazines, cat
 - Tap/click, drag, and wheel interactions
 - Auto and manual flip progression with controller access
 - Single-page and double-page layouts
-- Optional Mushaf-style page chrome:
+- Optional book-style page chrome:
   - top header area
   - bottom footer area
   - per-page header/footer text
@@ -28,25 +28,7 @@ This package is designed for immersive reader experiences (books, magazines, cat
 
 ```yaml
 dependencies:
-  flutter_realistic_flipbook: ^0.0.1
-```
-
-### 2) From private/public Git
-
-```yaml
-dependencies:
-  flutter_realistic_flipbook:
-    git:
-      url: git@github.com:88hitman/flutter_realistic_flipbook.git
-      ref: main
-```
-
-### 3) From local path (development)
-
-```yaml
-dependencies:
-  flutter_realistic_flipbook:
-    path: ../flutter_realistic_flipbook
+  flutter_realistic_flipbook: ^0.0.2
 ```
 
 Then run:
@@ -99,21 +81,12 @@ class _FlipbookDemoState extends State<FlipbookDemo> {
 }
 ```
 
-## Mushaf-Style Chrome Example
+## Page Styling Example
 
 ```dart
 RealisticFlipbook(
   pages: pages,
-  mushafChrome: true,
   paperColor: const Color(0xFFFFFCF2),
-  mushafTopInsetRatio: 0.065,
-  mushafBottomInsetRatio: 0.075,
-  mushafSideInsetRatio: 0.04,
-  mushafHeaderFooterColor: const Color(0xFF5E4721),
-  mushafBorderColor: const Color(0xFFC8A163),
-  mushafInnerBorderColor: const Color(0xFFEED8AB),
-  mushafHeaderStyle: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700),
-  mushafFooterStyle: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700),
 )
 ```
 
@@ -123,8 +96,8 @@ To feed page metadata (header/footer text and alignment), use `FlipbookPage`:
 FlipbookPage(
   image: imageProvider,
   hiResImage: imageProviderHiRes,
-  headerText: 'سورة البقرة',
-  footerText: '2',
+  headerText: 'Chapter One',
+  footerText: '1',
   headerAlignment: Alignment.topRight,
 )
 ```
@@ -141,17 +114,7 @@ FlipbookPage(
 - `singlePage`, `forwardDirection`, `centering`, `startPage`
 - `clickToZoom`, `dragToFlip`, `dragToScroll`, `wheel`
 - `paperColor`, `blankPageColor`
-- Mushaf chrome settings:
-  - `mushafChrome`
-  - `mushafTopInsetRatio`
-  - `mushafBottomInsetRatio`
-  - `mushafSideInsetRatio`
-  - `mushafHeaderStyle`
-  - `mushafFooterStyle`
-  - `mushafHeaderFooterColor`
-  - `mushafBorderColor`
-  - `mushafInnerBorderColor`
-  - `mushafShadowStrength`
+- optional page chrome settings are available for header/footer zones, decorative borders, and paper styling
 - callbacks:
   - `onFlipLeftStart`, `onFlipLeftEnd`
   - `onFlipRightStart`, `onFlipRightEnd`
@@ -197,7 +160,7 @@ FlipbookPage(
 - **Package changes not reflected in host app:**
   - Confirm the app imports `package:flutter_realistic_flipbook/...` and not a local duplicate widget file.
 - **Transparent PNG pages look black/empty while flipping:**
-  - Set `paperColor` and use Mushaf chrome if needed.
+  - Set `paperColor` and enable page chrome if needed.
 
 ## Example App
 
