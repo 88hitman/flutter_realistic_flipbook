@@ -1,3 +1,10 @@
+## 0.1.0
+
+- BREAKING: rename page chrome API to the new book* naming.
+- Clean public docs and examples to book terminology only.
+- Keep realistic page-turn
+  rendering and interaction improvements.
+
 ## 0.0.2
 
 - Add demo GIF preview in README.
