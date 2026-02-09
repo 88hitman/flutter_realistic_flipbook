@@ -19,7 +19,7 @@ Initial public release of `flutter_realistic_flipbook`.
 - Single-page and double-page layouts.
 - Controller API (`flipLeft`, `flipRight`, `zoomIn`, `zoomOut`, `goToPage`).
 - Hi-res image support via `FlipbookPage.hiResImage`.
-- Optional Mushaf-style page chrome:
+- Optional book-style page chrome:
   - configurable top/bottom/side insets
   - per-page header/footer text
   - configurable border, shadow, and typography

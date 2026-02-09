@@ -80,16 +80,16 @@ class RealisticFlipbook extends StatefulWidget {
     this.wheel = FlipbookWheelMode.scroll,
     this.clipToViewport = true,
     this.paperColor = Colors.white,
-    this.mushafChrome = false,
-    this.mushafTopInsetRatio = 0.075,
-    this.mushafBottomInsetRatio = 0.085,
-    this.mushafSideInsetRatio = 0.045,
-    this.mushafHeaderStyle,
-    this.mushafFooterStyle,
-    this.mushafHeaderFooterColor = const Color(0xFF6D4C1E),
-    this.mushafBorderColor = const Color(0xFFC8A86F),
-    this.mushafInnerBorderColor = const Color(0xFFEAD3A5),
-    this.mushafShadowStrength = 0.22,
+    this.bookChrome = false,
+    this.bookTopInsetRatio = 0.075,
+    this.bookBottomInsetRatio = 0.085,
+    this.bookSideInsetRatio = 0.045,
+    this.bookHeaderStyle,
+    this.bookFooterStyle,
+    this.bookHeaderFooterColor = const Color(0xFF6D4C1E),
+    this.bookBorderColor = const Color(0xFFC8A86F),
+    this.bookInnerBorderColor = const Color(0xFFEAD3A5),
+    this.bookShadowStrength = 0.22,
     this.blankPageColor = const Color(0xFFDDDDDD),
     this.loadingBuilder,
     this.onFlipLeftStart,
@@ -102,10 +102,10 @@ class RealisticFlipbook extends StatefulWidget {
         assert(nPolygons > 0),
         assert(ambient >= 0 && ambient <= 1),
         assert(gloss >= 0 && gloss <= 1),
-        assert(mushafTopInsetRatio >= 0 && mushafTopInsetRatio <= 0.3),
-        assert(mushafBottomInsetRatio >= 0 && mushafBottomInsetRatio <= 0.3),
-        assert(mushafSideInsetRatio >= 0 && mushafSideInsetRatio <= 0.2),
-        assert(mushafShadowStrength >= 0 && mushafShadowStrength <= 1);
+        assert(bookTopInsetRatio >= 0 && bookTopInsetRatio <= 0.3),
+        assert(bookBottomInsetRatio >= 0 && bookBottomInsetRatio <= 0.3),
+        assert(bookSideInsetRatio >= 0 && bookSideInsetRatio <= 0.2),
+        assert(bookShadowStrength >= 0 && bookShadowStrength <= 1);
 
   final List<FlipbookPage?> pages;
   final FlipbookController? controller;
@@ -132,16 +132,16 @@ class RealisticFlipbook extends StatefulWidget {
   final bool clipToViewport;
 
   final Color paperColor;
-  final bool mushafChrome;
-  final double mushafTopInsetRatio;
-  final double mushafBottomInsetRatio;
-  final double mushafSideInsetRatio;
-  final TextStyle? mushafHeaderStyle;
-  final TextStyle? mushafFooterStyle;
-  final Color mushafHeaderFooterColor;
-  final Color mushafBorderColor;
-  final Color mushafInnerBorderColor;
-  final double mushafShadowStrength;
+  final bool bookChrome;
+  final double bookTopInsetRatio;
+  final double bookBottomInsetRatio;
+  final double bookSideInsetRatio;
+  final TextStyle? bookHeaderStyle;
+  final TextStyle? bookFooterStyle;
+  final Color bookHeaderFooterColor;
+  final Color bookBorderColor;
+  final Color bookInnerBorderColor;
+  final double bookShadowStrength;
   final Color blankPageColor;
   final WidgetBuilder? loadingBuilder;
 
@@ -158,7 +158,7 @@ class RealisticFlipbook extends StatefulWidget {
 
 class _RealisticFlipbookState extends State<RealisticFlipbook>
     with TickerProviderStateMixin {
-  static const String _buildTag = 'flipbook_local_2026_02_09_r12';
+  static const String _buildTag = 'flipbook_local_2026_02_09_r13';
   Size _viewSize = Size.zero;
   double? _imageWidth;
   double? _imageHeight;
@@ -1265,7 +1265,7 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
             },
           );
 
-    if (!widget.mushafChrome) {
+    if (!widget.bookChrome) {
       return RepaintBoundary(
         child: Stack(
           fit: StackFit.expand,
@@ -1292,31 +1292,31 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
           final width = constraints.maxWidth;
           final height = constraints.maxHeight;
 
-          final sideInset = (width * widget.mushafSideInsetRatio).clamp(
+          final sideInset = (width * widget.bookSideInsetRatio).clamp(
             8.0,
             40.0,
           );
-          final topInset = (height * widget.mushafTopInsetRatio).clamp(
+          final topInset = (height * widget.bookTopInsetRatio).clamp(
             12.0,
             64.0,
           );
-          final bottomInset = (height * widget.mushafBottomInsetRatio).clamp(
+          final bottomInset = (height * widget.bookBottomInsetRatio).clamp(
             12.0,
             72.0,
           );
           final outerRadius = (width * 0.018).clamp(6.0, 16.0);
           final innerRadius = (width * 0.008).clamp(2.0, 8.0);
 
-          final headerStyle = widget.mushafHeaderStyle ??
+          final headerStyle = widget.bookHeaderStyle ??
               TextStyle(
-                color: widget.mushafHeaderFooterColor,
+                color: widget.bookHeaderFooterColor,
                 fontSize: (width * 0.028).clamp(10.0, 18.0),
                 fontWeight: FontWeight.w600,
                 height: 1.1,
               );
-          final footerStyle = widget.mushafFooterStyle ??
+          final footerStyle = widget.bookFooterStyle ??
               TextStyle(
-                color: widget.mushafHeaderFooterColor,
+                color: widget.bookHeaderFooterColor,
                 fontSize: (width * 0.03).clamp(10.0, 18.0),
                 fontWeight: FontWeight.w700,
               );
@@ -1324,7 +1324,7 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
           return DecoratedBox(
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(outerRadius),
-              border: Border.all(color: widget.mushafBorderColor, width: 1.2),
+              border: Border.all(color: widget.bookBorderColor, width: 1.2),
               gradient: LinearGradient(
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
@@ -1338,14 +1338,14 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
               boxShadow: <BoxShadow>[
                 BoxShadow(
                   color: Colors.black.withValues(
-                    alpha: widget.mushafShadowStrength * 0.55,
+                    alpha: widget.bookShadowStrength * 0.55,
                   ),
                   blurRadius: 9,
                   offset: const Offset(0, 2),
                 ),
                 BoxShadow(
                   color: Colors.black.withValues(
-                    alpha: widget.mushafShadowStrength * 0.25,
+                    alpha: widget.bookShadowStrength * 0.25,
                   ),
                   blurRadius: 18,
                   offset: const Offset(0, 8),
@@ -1362,7 +1362,7 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
                       decoration: BoxDecoration(
                         borderRadius: BorderRadius.circular(outerRadius - 2),
                         border: Border.all(
-                          color: widget.mushafInnerBorderColor.withValues(
+                          color: widget.bookInnerBorderColor.withValues(
                             alpha: 0.9,
                           ),
                         ),
