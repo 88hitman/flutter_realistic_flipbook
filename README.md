@@ -6,7 +6,7 @@ This package is designed for immersive reader experiences (books, magazines, cat
 
 ## Preview
 
-![Realistic flipbook demo](assets/preview/realistic-flipbook-demo.gif)
+![Realistic flipbook demo](https://raw.githubusercontent.com/88hitman/flutter_realistic_flipbook/main/assets/preview/realistic-flipbook-demo.gif)
 
 ## Highlights
 
@@ -28,7 +28,7 @@ This package is designed for immersive reader experiences (books, magazines, cat
 
 ```yaml
 dependencies:
-  flutter_realistic_flipbook: ^0.0.2
+  flutter_realistic_flipbook: ^0.1.1
 ```
 
 Then run:

@@ -1,3 +1,8 @@
+## 0.1.1
+
+- Fix README preview image for pub.dev by using an absolute HTTPS URL.
+- Update README install snippet to `^0.1.1`.
+
 ## 0.1.0
 
 - BREAKING: rename page chrome API to the new book* naming.
