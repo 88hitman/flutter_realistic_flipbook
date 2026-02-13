@@ -1,26 +1,23 @@
 # flutter_realistic_flipbook
 
-A realistic 3D page-turn widget for Flutter, inspired by `flipbook-vue`.
+A realistic page-turn widget for Flutter.
 
-This package is built for reader-like experiences where a page should bend, light, and turn like a physical book, not slide like a flat carousel.
+It is designed for reader-style experiences (books, magazines, catalogs) with natural navigation in both single-page and double-page layouts.
 
 ## Preview
 
 ![Realistic flipbook demo](https://raw.githubusercontent.com/88hitman/flutter_realistic_flipbook/main/assets/preview/realistic-flipbook-demo.gif)
 
-## What You Get
+## Features
 
-- Real-time 3D page curvature using polygon strips (`nPolygons`)
-- Perspective projection + diffuse/specular lighting
-- Manual drag flip with velocity continuation
-- Programmatic control with `FlipbookController`
-- Single-page and double-page layouts
-- Spread-aware single-page navigation (camera slide + page turn)
-- Zoom support with animated transitions
-- Optional page chrome (header/footer, border, paper style)
-- Two page rendering modes:
-  - `image` mode (static page textures)
-  - `widget` mode (live widget pages + GPU snapshot textures during flip)
+- Realistic page-turn animation
+- Manual swipe and programmatic navigation
+- Single-page and double-page display
+- Zoom support
+- Optional book-style page chrome (header, footer, border)
+- Two content modes:
+  - Image pages
+  - Widget pages
 
 ## Installation
 
@@ -28,8 +25,6 @@ This package is built for reader-like experiences where a page should bend, ligh
 dependencies:
   flutter_realistic_flipbook: ^0.1.2
 ```
-
-Then:
 
 ```bash
 flutter pub get
@@ -41,7 +36,7 @@ flutter pub get
 import 'package:flutter_realistic_flipbook/flutter_realistic_flipbook.dart';
 ```
 
-## Quick Start
+## Basic Usage
 
 ```dart
 final controller = FlipbookController();
@@ -49,19 +44,15 @@ final controller = FlipbookController();
 RealisticFlipbook(
   controller: controller,
   pages: pages,
-  nPolygons: 14,
-  perspective: 2200,
-  ambient: 0.72,
-  gloss: 0.25,
-  flipDuration: const Duration(milliseconds: 1300),
+  flipDuration: const Duration(milliseconds: 1200),
 );
 ```
 
-## Page Modes
+## Page Content Modes
 
-### 1) Image Mode
+### Image Mode
 
-Use `FlipbookPage(image: ...)` when pages are static images.
+Use image-based pages when content is static.
 
 ```dart
 final pages = <FlipbookPage?>[
@@ -72,9 +63,9 @@ final pages = <FlipbookPage?>[
 ];
 ```
 
-### 2) Widget Mode
+### Widget Mode
 
-Use `FlipbookPage(widgetBuilder: ...)` for dynamic Flutter pages.
+Use widget-based pages when content is dynamic or interactive.
 
 ```dart
 final pages = <FlipbookPage?>[
@@ -84,28 +75,22 @@ final pages = <FlipbookPage?>[
     widgetBuilder: (context) => Container(
       color: const Color(0xFFFFF8E8),
       padding: const EdgeInsets.all(24),
-      child: const Text('Dynamic magazine page'),
+      child: const Text('Dynamic page'),
     ),
   ),
   FlipbookPage(
     sizeHint: const Size(1000, 1414),
     widgetBuilder: (context) => Container(
       color: const Color(0xFFFFF8E8),
-      child: const Center(child: Text('Another widget page')),
+      child: const Center(child: Text('Another page')),
     ),
   ),
 ];
 ```
 
-How widget mode works:
-
-- Resting pages are rendered as live widgets.
-- During 3D flip, the engine uses GPU snapshots (`ui.Image`) rendered with `RawImage` for strip texturing.
-- This avoids PNG encode/decode overhead and removes transient blank flashes at flip start.
-
 ## Gesture Integration
 
-If your child widgets already handle tap/long-press/double-tap, enable pass-through mode:
+If your page widgets handle their own taps/presses, enable gesture pass-through:
 
 ```dart
 RealisticFlipbook(
@@ -117,75 +102,43 @@ RealisticFlipbook(
 )
 ```
 
-## Optional Book Chrome
-
-```dart
-RealisticFlipbook(
-  pages: pages,
-  bookChrome: true,
-  paperColor: const Color(0xFFFFFCF2),
-  bookTopInsetRatio: 0.075,
-  bookBottomInsetRatio: 0.085,
-  bookSideInsetRatio: 0.045,
-)
-```
-
-Per-page metadata:
-
-```dart
-FlipbookPage(
-  image: const AssetImage('assets/pages/10.jpg'),
-  headerText: 'Chapter 1',
-  footerText: '10',
-  headerAlignment: Alignment.topRight,
-)
-```
-
 ## Core API
 
 ### `RealisticFlipbook`
 
-Main groups of parameters:
+Main widget that renders and animates the book.
 
-- Data: `pages`, `controller`, `startPage`
-- Motion: `flipDuration`, `singlePageSlideDuration`, `nPolygons`, `perspective`, `ambient`, `gloss`, `swipeMin`
-- Layout: `singlePage`, `forwardDirection`, `centering`, `clipToViewport`, `singlePageSpreadNavigation`
-- Input: `allowPageWidgetGestures`, `tapToFlip`, `clickToZoom`, `dragToFlip`, `dragToScroll`, `wheel`
-- Zoom: `zooms`, `zoomDuration`
-- Styling: `paperColor`, `blankPageColor`, `bookChrome`, `book*`
-- Callbacks: `onFlipLeftStart`, `onFlipLeftEnd`, `onFlipRightStart`, `onFlipRightEnd`, `onZoomStart`, `onZoomEnd`
+Use it to configure:
+
+- pages and controller
+- animation and navigation behavior
+- single vs double page layout
+- zoom and gesture behavior
+- visual styling (paper/chrome)
 
 ### `FlipbookPage`
 
-- `image` (`ImageProvider?`)
-- `widgetBuilder` (`WidgetBuilder?`)
-- `sizeHint` (`Size?`)
-- `hiResImage` (`ImageProvider?`)
-- `headerText`, `footerText`, `headerAlignment`
+Data model for one page.
 
-At least one of `image` or `widgetBuilder` is required.
+A page can be defined with either:
+
+- an `image`, or
+- a `widgetBuilder`
+
+You can also provide optional metadata (`headerText`, `footerText`, etc.).
 
 ### `FlipbookController`
 
-- State: `canFlipLeft`, `canFlipRight`, `canZoomIn`, `canZoomOut`, `page`, `numPages`
-- Actions: `flipLeft()`, `flipRight()`, `zoomIn()`, `zoomOut()`, `goToPage()`
+Imperative controller for navigation and zoom.
 
-## Behavior Notes
+It exposes:
 
-- If `pages.first == null`, indexing follows a cover-like behavior.
-- Double-page mode activates when width > height and `singlePage == false`.
-- In spread-aware single-page mode, navigation can combine camera translation and page turn.
+- state (`page`, `numPages`, `canFlipLeft`, `canFlipRight`, ...)
+- actions (`flipLeft`, `flipRight`, `zoomIn`, `zoomOut`, `goToPage`)
 
-## Performance Tips
+## Example
 
-- Start with `nPolygons` between `10` and `16` on mobile.
-- Increase only if needed.
-- Use sensible page dimensions and compressed assets.
-- For widget-only books, provide `sizeHint` to stabilize layout initialization.
-
-## Example App
-
-A runnable example is included in `example/`.
+A runnable demo is available in `example/`.
 
 ```bash
 cd example

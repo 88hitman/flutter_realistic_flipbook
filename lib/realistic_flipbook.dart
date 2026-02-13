@@ -83,6 +83,7 @@ class RealisticFlipbook extends StatefulWidget {
     this.forwardDirection = FlipbookForwardDirection.right,
     this.centering = true,
     this.startPage,
+    this.flipThreshold = 0.25,
     this.allowPageWidgetGestures = false,
     this.tapToFlip = true,
     this.clickToZoom = true,
@@ -141,6 +142,7 @@ class RealisticFlipbook extends StatefulWidget {
   final FlipbookForwardDirection forwardDirection;
   final bool centering;
   final int? startPage;
+  final double flipThreshold;
 
   final bool allowPageWidgetGestures;
   final bool tapToFlip;
@@ -179,7 +181,7 @@ class RealisticFlipbook extends StatefulWidget {
 
 class _RealisticFlipbookState extends State<RealisticFlipbook>
     with TickerProviderStateMixin {
-  static const String _buildTag = 'flipbook_local_2026_02_13_r47';
+  static const String _buildTag = 'flipbook_local_2026_02_13_r48';
   static const Duration _widgetSnapshotRefreshInterval = Duration(
     milliseconds: 1200,
   );
@@ -2071,7 +2073,7 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
       final forwardFling = _slide.direction == _FlipDirection.left
           ? velocityX > velocityThreshold
           : velocityX < -velocityThreshold;
-      if (_slide.progress >= 0.5 || forwardFling) {
+      if (_slide.progress >= widget.flipThreshold || forwardFling) {
         unawaited(_slideAuto(ease: false));
       } else {
         unawaited(_slideRevert());
@@ -2081,7 +2083,7 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
       final forwardFling = _flip.direction == _FlipDirection.left
           ? velocityX > velocityThreshold
           : velocityX < -velocityThreshold;
-      if (_flip.progress >= 0.5 || forwardFling) {
+      if (_flip.progress >= widget.flipThreshold || forwardFling) {
         unawaited(_flipAuto(ease: false));
       } else {
         unawaited(_flipRevert());
