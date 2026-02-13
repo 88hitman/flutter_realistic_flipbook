@@ -1,0 +1,9 @@
+# Local debug artifacts
+firebase-debug.log
+.DS_Store
+
+# Example local/generated artifacts
+example/.dart_tool/
+example/build/
+example/.idea/
+example/.metadata

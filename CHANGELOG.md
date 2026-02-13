@@ -1,3 +1,11 @@
+## 0.1.2
+
+- Rework widget-page flip rendering pipeline for production stability.
+- Use GPU snapshots (`ui.Image`) with `RawImage` during 3D strip rendering.
+- Remove transient flash/disappearance at flip start in widget mode.
+- Improve verso/recto continuity for widget pages during page curl.
+- Update README with explicit Image mode vs Widget mode documentation.
+
 ## 0.1.1
 
 - Fix README preview image for pub.dev by using an absolute HTTPS URL.
@@ -7,15 +15,13 @@
 
 - BREAKING: rename page chrome API to the new book* naming.
 - Clean public docs and examples to book terminology only.
-- Keep realistic page-turn
-  rendering and interaction improvements.
+- Keep realistic page-turn rendering and interaction improvements.
 
 ## 0.0.2
 
 - Add demo GIF preview in README.
 - Improve example fullscreen layout for capture/demo.
 - Fix and polish realistic page flip rendering behavior.
-  
 
 ## 0.0.1
 
