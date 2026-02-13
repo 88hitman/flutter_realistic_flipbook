@@ -83,7 +83,7 @@ class RealisticFlipbook extends StatefulWidget {
     this.forwardDirection = FlipbookForwardDirection.right,
     this.centering = true,
     this.startPage,
-    this.flipThreshold = 0.25,
+    this.flipThreshold = 0.15,
     this.allowPageWidgetGestures = false,
     this.tapToFlip = true,
     this.clickToZoom = true,
@@ -181,7 +181,7 @@ class RealisticFlipbook extends StatefulWidget {
 
 class _RealisticFlipbookState extends State<RealisticFlipbook>
     with TickerProviderStateMixin {
-  static const String _buildTag = 'flipbook_local_2026_02_13_r48';
+  static const String _buildTag = 'flipbook_local_2026_02_13_r49';
   static const Duration _widgetSnapshotRefreshInterval = Duration(
     milliseconds: 1200,
   );
