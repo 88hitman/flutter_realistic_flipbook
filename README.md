@@ -15,6 +15,8 @@ This package is designed for immersive reader experiences (books, magazines, cat
 - Tap/click, drag, and wheel interactions
 - Auto and manual flip progression with controller access
 - Single-page and double-page layouts
+- Spread-aware single-page navigation (camera slide between left/right pages)
+- Supports both image pages and Flutter widget pages
 - Optional book-style page chrome:
   - top header area
   - bottom footer area
@@ -102,6 +104,31 @@ FlipbookPage(
 )
 ```
 
+## Widget Page Usage
+
+`FlipbookPage` can be backed by a widget instead of an image:
+
+```dart
+FlipbookPage(
+  widgetBuilder: (context) {
+    return Container(
+      color: const Color(0xFFFFF8E8),
+      alignment: Alignment.center,
+      child: const Text('Dynamic page widget'),
+    );
+  },
+  // Recommended when your book is widget-only.
+  sizeHint: const Size(1000, 1414),
+  headerText: 'Chapter One',
+  footerText: '12',
+)
+```
+
+Notes:
+- Resting pages render as live widgets.
+- During 3D page-turn, widget pages are rendered from internal snapshots to preserve strip-based performance.
+- If both `image` and `widgetBuilder` are provided, the live widget is used for resting pages and image/snapshot is used as fallback texture for flips.
+
 ## Core API
 
 ### `RealisticFlipbook`
@@ -112,6 +139,7 @@ FlipbookPage(
 - `zooms` (`List<double>`)
 - `perspective`, `nPolygons`, `ambient`, `gloss`, `swipeMin`
 - `singlePage`, `forwardDirection`, `centering`, `startPage`
+- `singlePageSpreadNavigation`, `singlePageSlideDuration`
 - `clickToZoom`, `dragToFlip`, `dragToScroll`, `wheel`
 - `paperColor`, `blankPageColor`
 - optional page chrome settings are available for header/footer zones, decorative borders, and paper styling
@@ -122,11 +150,15 @@ FlipbookPage(
 
 ### `FlipbookPage`
 
-- `image` (`ImageProvider`) required
+- `image` (`ImageProvider?`) optional
+- `widgetBuilder` (`WidgetBuilder?`) optional
+- `sizeHint` (`Size?`) optional (recommended for widget-only books)
 - `hiResImage` (`ImageProvider?`) optional (used for zoomed rendering)
 - `headerText` (`String?`) optional
 - `footerText` (`String?`) optional
 - `headerAlignment` (`Alignment`) optional
+
+At least one of `image` or `widgetBuilder` must be provided.
 
 ### `FlipbookController`
 
@@ -143,8 +175,10 @@ FlipbookPage(
 
 - If the first element in `pages` is `null`, the widget follows cover-like behavior for page indexing similar to the source inspiration.
 - Double-page mode activates when viewport width is larger than height and `singlePage == false`.
+- In single-page mode, spread-aware navigation is enabled by default: the first step within a spread uses a horizontal camera slide, and the next step uses a page-turn to move to the next spread.
 - Drag flip progress is direct and can be completed by velocity fling.
 - Hi-res images are preloaded around the active page range for smoother zoomed rendering.
+- Widget pages are captured as textures around the active range so they can be used inside the 3D strip renderer.
 
 ## Performance Recommendations
 

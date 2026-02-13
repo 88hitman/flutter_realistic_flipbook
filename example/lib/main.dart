@@ -73,6 +73,8 @@ class _DemoScreenState extends State<DemoScreen> {
             dragToFlip: true,
             dragToScroll: true,
             wheel: FlipbookWheelMode.scroll,
+            singlePageSpreadNavigation: true,
+            singlePageSlideDuration: const Duration(milliseconds: 320),
           ),
         ),
       ),
