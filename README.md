@@ -15,6 +15,7 @@ It is designed for reader-style experiences (books, magazines, catalogs) with na
 - Single-page and double-page display
 - Zoom support
 - Optional book-style page chrome (header, footer, border)
+- Pre-flip navigation guard (`onFlipGuard`)
 - Two content modes:
   - Image pages
   - Widget pages
@@ -23,7 +24,7 @@ It is designed for reader-style experiences (books, magazines, catalogs) with na
 
 ```yaml
 dependencies:
-  flutter_realistic_flipbook: ^0.1.2
+  flutter_realistic_flipbook: ^0.1.3
 ```
 
 ```bash
@@ -99,6 +100,20 @@ RealisticFlipbook(
   tapToFlip: false,
   clickToZoom: false,
   dragToFlip: true,
+)
+```
+
+## Navigation Guard
+
+Use `onFlipGuard` to block a flip before the animation starts:
+
+```dart
+RealisticFlipbook(
+  pages: pages,
+  onFlipGuard: (currentPage, targetPage, direction, auto) {
+    final inAllowedRange = targetPage >= 10 && targetPage <= 30;
+    return inAllowedRange;
+  },
 )
 ```
 

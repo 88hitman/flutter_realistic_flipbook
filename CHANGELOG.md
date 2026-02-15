@@ -1,3 +1,9 @@
+## 0.1.3
+
+- Add `onFlipGuard` callback to validate a flip before animation starts.
+- Add `FlipbookNavigationDirection` and `FlipbookFlipGuardCallback`.
+- Prevent swipe/tap/programmatic flip start when guard returns `false`.
+
 ## 0.1.2
 
 - Rework widget-page flip rendering pipeline for production stability.
