@@ -9,10 +9,18 @@ import 'package:flutter/rendering.dart';
 
 typedef FlipbookPageCallback = void Function(int page);
 typedef FlipbookZoomCallback = void Function(double zoom);
+typedef FlipbookFlipGuardCallback = bool Function(
+  int currentPage,
+  int targetPage,
+  FlipbookNavigationDirection direction,
+  bool auto,
+);
 
 enum FlipbookForwardDirection { right, left }
 
 enum FlipbookWheelMode { scroll, zoom }
+
+enum FlipbookNavigationDirection { left, right }
 
 enum _FlipDirection { left, right }
 
@@ -112,6 +120,7 @@ class RealisticFlipbook extends StatefulWidget {
     this.onFlipRightEnd,
     this.onZoomStart,
     this.onZoomEnd,
+    this.onFlipGuard,
   })  : assert(zooms.length > 0),
         assert(nPolygons > 0),
         assert(ambient >= 0 && ambient <= 1),
@@ -174,6 +183,7 @@ class RealisticFlipbook extends StatefulWidget {
   final FlipbookPageCallback? onFlipRightEnd;
   final FlipbookZoomCallback? onZoomStart;
   final FlipbookZoomCallback? onZoomEnd;
+  final FlipbookFlipGuardCallback? onFlipGuard;
 
   @override
   State<RealisticFlipbook> createState() => _RealisticFlipbookState();
@@ -203,6 +213,7 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
   double _dragDx = 0;
   double _dragDy = 0;
   double _maxMove = 0;
+  _FlipDirection? _blockedSwipeDirection;
   MouseCursor? _activeCursor;
 
   double _startScrollLeft = 0;
@@ -492,6 +503,42 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
       return false;
     }
     return _pageHasContent(pageIndex);
+  }
+
+  int _pageIndexToPublicPage(int pageIndex) {
+    if (widget.pages.isNotEmpty && widget.pages.first == null) {
+      return pageIndex;
+    }
+    return pageIndex + 1;
+  }
+
+  int? _targetPageIndexForDirection(_FlipDirection direction) {
+    if (_shouldUseSinglePageSlide(direction)) {
+      final delta = direction == _forwardDirection ? 1 : -1;
+      return _currentPage + delta;
+    }
+    return _flipPagesForDirection(direction).backPage;
+  }
+
+  bool _canStartFlip(_FlipDirection direction, {required bool auto}) {
+    final guard = widget.onFlipGuard;
+    if (guard == null) {
+      return true;
+    }
+
+    final targetPageIndex = _targetPageIndexForDirection(direction);
+    if (targetPageIndex == null || !_hasRenderablePage(targetPageIndex)) {
+      return false;
+    }
+
+    return guard(
+      _publicPage,
+      _pageIndexToPublicPage(targetPageIndex),
+      direction == _FlipDirection.left
+          ? FlipbookNavigationDirection.left
+          : FlipbookNavigationDirection.right,
+      auto,
+    );
   }
 
   double _singleSpreadCameraFactor() {
@@ -1061,9 +1108,8 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
 
   void _pruneWidgetSnapshotCache() {
     final keep = _widgetCaptureCandidates();
-    final toRemove = _widgetSnapshotProviders.keys
-        .where((k) => !keep.contains(k))
-        .toList();
+    final toRemove =
+        _widgetSnapshotProviders.keys.where((k) => !keep.contains(k)).toList();
 
     for (final page in toRemove) {
       final image = _widgetSnapshotProviders[page];
@@ -1308,14 +1354,20 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
   }
 
   void _flipLeft({required bool auto}) {
-    if (!_canFlipLeft) {
+    if (_slide.direction != null || !_canFlipLeft) {
+      return;
+    }
+    if (!_canStartFlip(_FlipDirection.left, auto: auto)) {
       return;
     }
     _flipStart(_FlipDirection.left, auto);
   }
 
   void _flipRight({required bool auto}) {
-    if (!_canFlipRight) {
+    if (_slide.direction != null || !_canFlipRight) {
+      return;
+    }
+    if (!_canStartFlip(_FlipDirection.right, auto: auto)) {
       return;
     }
     _flipStart(_FlipDirection.right, auto);
@@ -1878,6 +1930,7 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
     _dragDx = 0;
     _dragDy = 0;
     _maxMove = 0;
+    _blockedSwipeDirection = null;
     if (_zoom <= 1) {
       if (widget.dragToFlip) {
         setState(() {
@@ -1933,8 +1986,17 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
     });
 
     if (x > 0) {
-      if (_flip.direction == null && _canFlipLeft && x >= widget.swipeMin) {
-        _flipStart(_FlipDirection.left, false);
+      if (_flip.direction == null &&
+          x >= widget.swipeMin &&
+          _blockedSwipeDirection != _FlipDirection.left) {
+        final started = _slide.direction == null &&
+            _canFlipLeft &&
+            _canStartFlip(_FlipDirection.left, auto: false);
+        if (started) {
+          _flipStart(_FlipDirection.left, false);
+        } else {
+          _blockedSwipeDirection = _FlipDirection.left;
+        }
       }
       if (_flip.direction == _FlipDirection.left) {
         final progress = (x / _pageWidth).clamp(0.0, 1.0).toDouble();
@@ -1944,8 +2006,17 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
         _flipProgressController.value = progress;
       }
     } else {
-      if (_flip.direction == null && _canFlipRight && x <= -widget.swipeMin) {
-        _flipStart(_FlipDirection.right, false);
+      if (_flip.direction == null &&
+          x <= -widget.swipeMin &&
+          _blockedSwipeDirection != _FlipDirection.right) {
+        final started = _slide.direction == null &&
+            _canFlipRight &&
+            _canStartFlip(_FlipDirection.right, auto: false);
+        if (started) {
+          _flipStart(_FlipDirection.right, false);
+        } else {
+          _blockedSwipeDirection = _FlipDirection.right;
+        }
       }
       if (_flip.direction == _FlipDirection.right) {
         final progress = (-x / _pageWidth).clamp(0.0, 1.0).toDouble();
@@ -2094,6 +2165,7 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
       _touchStart = null;
       _lastTouch = null;
       _activeCursor = null;
+      _blockedSwipeDirection = null;
     });
   }
 
@@ -2817,7 +2889,9 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
     );
     final rawImage = _pageRawImage(frontPage);
     final pageData = _pageData(frontPage);
-    if (provider == null && rawImage == null && pageData?.widgetBuilder == null) {
+    if (provider == null &&
+        rawImage == null &&
+        pageData?.widgetBuilder == null) {
       return const SizedBox.shrink();
     }
 
