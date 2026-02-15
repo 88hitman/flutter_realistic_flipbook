@@ -195,6 +195,13 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
   static const Duration _widgetSnapshotRefreshInterval = Duration(
     milliseconds: 1200,
   );
+  static const Duration _navigationWatchdogTickInterval = Duration(
+    milliseconds: 120,
+  );
+  static const Duration _navigationWatchdogIdleTimeout = Duration(
+    milliseconds: 650,
+  );
+  static const int _navigationWatchdogMaxAnimatedRecoveryAttempts = 2;
   Size _viewSize = Size.zero;
   double? _imageWidth;
   double? _imageHeight;
@@ -262,6 +269,9 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
   bool _pendingFlipAuto = false;
   int? _pendingFlipFrontPage;
   int? _pendingFlipBackPage;
+  Timer? _navigationWatchdogTimer;
+  DateTime _lastInteractionAt = DateTime.fromMillisecondsSinceEpoch(0);
+  int _navigationWatchdogRecoveryAttempts = 0;
 
   @override
   void initState() {
@@ -329,6 +339,7 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
   void dispose() {
     widget.controller?._detach(this);
     _detachMetricListener();
+    _stopNavigationWatchdog();
     for (final image in _widgetSnapshotProviders.values) {
       try {
         image.dispose();
@@ -369,6 +380,95 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
 
   bool get _navigationInProgress =>
       _flip.direction != null || _slide.direction != null;
+
+  bool get _hasActivePointer =>
+      _touchStart != null || _rawActivePointer != null;
+
+  void _resetNavigationWatchdogRecoveryAttempts() {
+    _navigationWatchdogRecoveryAttempts = 0;
+  }
+
+  void _stopNavigationWatchdog() {
+    _navigationWatchdogTimer?.cancel();
+    _navigationWatchdogTimer = null;
+    _resetNavigationWatchdogRecoveryAttempts();
+  }
+
+  void _maybeStopNavigationWatchdog() {
+    if (!_navigationInProgress && !_hasActivePointer) {
+      _stopNavigationWatchdog();
+    }
+  }
+
+  void _markInteraction() {
+    _lastInteractionAt = DateTime.now();
+    _resetNavigationWatchdogRecoveryAttempts();
+    _navigationWatchdogTimer ??= Timer.periodic(
+      _navigationWatchdogTickInterval,
+      _onNavigationWatchdogTick,
+    );
+  }
+
+  void _nudgeWatchdogRecovery() {
+    _navigationWatchdogTimer ??= Timer.periodic(
+      _navigationWatchdogTickInterval,
+      _onNavigationWatchdogTick,
+    );
+    _lastInteractionAt =
+        DateTime.now().subtract(_navigationWatchdogIdleTimeout);
+  }
+
+  void _onNavigationWatchdogTick(Timer timer) {
+    if (!mounted) {
+      _stopNavigationWatchdog();
+      return;
+    }
+    if (!_navigationInProgress) {
+      _maybeStopNavigationWatchdog();
+      return;
+    }
+    if (_flipProgressController.isAnimating) {
+      return;
+    }
+    if (_hasActivePointer) {
+      return;
+    }
+
+    final idleFor = DateTime.now().difference(_lastInteractionAt);
+    if (idleFor < _navigationWatchdogIdleTimeout) {
+      return;
+    }
+
+    final canAttemptAnimatedRecovery = _navigationWatchdogRecoveryAttempts <
+        _navigationWatchdogMaxAnimatedRecoveryAttempts;
+
+    if (_slide.direction != null) {
+      _lastInteractionAt = DateTime.now();
+      if (!canAttemptAnimatedRecovery) {
+        _cancelSlide();
+      } else if (_slide.progress >= widget.flipThreshold) {
+        _navigationWatchdogRecoveryAttempts += 1;
+        unawaited(_slideAuto(ease: false));
+      } else {
+        _navigationWatchdogRecoveryAttempts += 1;
+        unawaited(_slideRevert());
+      }
+      return;
+    }
+
+    if (_flip.direction != null) {
+      _lastInteractionAt = DateTime.now();
+      if (!canAttemptAnimatedRecovery) {
+        _cancelFlip();
+      } else if (_flip.progress >= widget.flipThreshold) {
+        _navigationWatchdogRecoveryAttempts += 1;
+        unawaited(_flipAuto(ease: false));
+      } else {
+        _navigationWatchdogRecoveryAttempts += 1;
+        unawaited(_flipRevert());
+      }
+    }
+  }
 
   bool get _canGoForward =>
       !_navigationInProgress &&
@@ -686,6 +786,7 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
     _slide.auto = false;
     _flipProgressController.value = 0;
     _clearFlipPreparationState(invalidateToken: false);
+    _resetNavigationWatchdogRecoveryAttempts();
   }
 
   void _updateLayoutForSize(Size size) {
@@ -815,6 +916,7 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
       _clearFlipPreparationState(invalidateToken: false);
       _syncCurrentPages();
       _preloadImages();
+      _resetNavigationWatchdogRecoveryAttempts();
     }
 
     if (notify) {
@@ -1414,6 +1516,7 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
     required int frontPage,
     required int backPage,
   }) {
+    _markInteraction();
     _queueFlipStartSnapshotRefresh(frontPage);
     _queueFlipStartSnapshotRefresh(backPage);
 
@@ -1462,6 +1565,7 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
     if (!_singleSpreadNavigationEnabled || _flip.direction != null) {
       return;
     }
+    _markInteraction();
 
     final delta = direction == _forwardDirection ? 1 : -1;
     final toPage = _currentPage + delta;
@@ -1517,6 +1621,9 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
         curve: ease ? Curves.easeInOut : Curves.linear,
       );
     } on TickerCanceled {
+      if (mounted && _flip.direction == direction) {
+        _nudgeWatchdogRecovery();
+      }
       return;
     }
 
@@ -1552,6 +1659,9 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
         curve: ease ? Curves.easeInOut : Curves.linear,
       );
     } on TickerCanceled {
+      if (mounted && _slide.direction == direction) {
+        _nudgeWatchdogRecovery();
+      }
       return;
     }
 
@@ -1582,6 +1692,9 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
         curve: Curves.linear,
       );
     } on TickerCanceled {
+      if (mounted && _flip.direction == direction) {
+        _nudgeWatchdogRecovery();
+      }
       return;
     }
     if (!mounted || _flip.direction != direction) {
@@ -1612,6 +1725,9 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
         curve: Curves.linear,
       );
     } on TickerCanceled {
+      if (mounted && _slide.direction == direction) {
+        _nudgeWatchdogRecovery();
+      }
       return;
     }
     if (!mounted || _slide.direction != direction) {
@@ -1646,6 +1762,8 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
       _slide.auto = false;
       _flipProgressController.value = 0;
     });
+    _resetNavigationWatchdogRecoveryAttempts();
+    _maybeStopNavigationWatchdog();
     _emitFlipEnd(direction);
     _preloadImages();
     _refreshVisibleWidgetSnapshotsAfterNavigation();
@@ -1677,6 +1795,8 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
       _slide.auto = false;
       _flipProgressController.value = 0;
     });
+    _resetNavigationWatchdogRecoveryAttempts();
+    _maybeStopNavigationWatchdog();
     _emitFlipEnd(direction);
     _preloadImages();
     _refreshVisibleWidgetSnapshotsAfterNavigation();
@@ -1704,6 +1824,8 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
       _slide.auto = false;
       _flipProgressController.value = 0;
     });
+    _resetNavigationWatchdogRecoveryAttempts();
+    _maybeStopNavigationWatchdog();
   }
 
   void _cancelSlide() {
@@ -1716,6 +1838,8 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
       _slide.auto = false;
       _flipProgressController.value = 0;
     });
+    _resetNavigationWatchdogRecoveryAttempts();
+    _maybeStopNavigationWatchdog();
   }
 
   void _emitFlipStart(_FlipDirection direction) {
@@ -1925,6 +2049,7 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
 
   void _startSwipe(Offset local) {
     _resetNavigationIfStuck();
+    _markInteraction();
     _touchStart = local;
     _lastTouch = local;
     _dragDx = 0;
@@ -1951,6 +2076,7 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
     if (start == null) {
       return;
     }
+    _markInteraction();
     _dragDx += delta.dx;
     _dragDy += delta.dy;
 
@@ -2125,6 +2251,7 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
     if (_touchStart == null) {
       return;
     }
+    _markInteraction();
 
     if (!widget.allowPageWidgetGestures &&
         widget.clickToZoom &&
@@ -2167,6 +2294,7 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
       _activeCursor = null;
       _blockedSwipeDirection = null;
     });
+    _maybeStopNavigationWatchdog();
   }
 
   void _onPointerSignal(PointerSignalEvent event) {

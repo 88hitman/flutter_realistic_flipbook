@@ -1,3 +1,9 @@
+## 0.1.4
+
+- Add a navigation watchdog to detect stalled mid-flip states.
+- Recover stalled flips/slides with animated settle/revert before hard reset.
+- Improve resilience when gesture end/cancel signals are missed.
+
 ## 0.1.3
 
 - Add `onFlipGuard` callback to validate a flip before animation starts.

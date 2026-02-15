@@ -16,6 +16,7 @@ It is designed for reader-style experiences (books, magazines, catalogs) with na
 - Zoom support
 - Optional book-style page chrome (header, footer, border)
 - Pre-flip navigation guard (`onFlipGuard`)
+- Stalled flip recovery watchdog (animated settle/revert)
 - Two content modes:
   - Image pages
   - Widget pages
@@ -24,7 +25,7 @@ It is designed for reader-style experiences (books, magazines, catalogs) with na
 
 ```yaml
 dependencies:
-  flutter_realistic_flipbook: ^0.1.3
+  flutter_realistic_flipbook: ^0.1.4
 ```
 
 ```bash
