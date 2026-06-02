@@ -65,6 +65,10 @@ final pages = <FlipbookPage?>[
 ];
 ```
 
+If the first entry is `null`, the next page is treated as a standalone cover.
+This gives a closed-book state in both single-page and double-page layouts:
+page 1 appears alone, and flipping forward opens the book.
+
 ### Widget Mode
 
 Use widget-based pages when content is dynamic or interactive.
@@ -87,6 +91,16 @@ final pages = <FlipbookPage?>[
       child: const Center(child: Text('Another page')),
     ),
   ),
+];
+```
+
+The same cover pattern works with widget pages:
+
+```dart
+final pages = <FlipbookPage?>[
+  null,
+  FlipbookPage(widgetBuilder: (context) => const CoverPage()),
+  FlipbookPage(widgetBuilder: (context) => const InteriorPage()),
 ];
 ```
 

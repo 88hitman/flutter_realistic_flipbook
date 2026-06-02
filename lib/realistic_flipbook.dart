@@ -798,6 +798,13 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
     if (_flipProgressController.isAnimating) {
       return;
     }
+    if (_hasActivePointer) {
+      return;
+    }
+    final idleFor = DateTime.now().difference(_lastInteractionAt);
+    if (idleFor < _navigationWatchdogIdleTimeout) {
+      return;
+    }
     final flipStuck = _flip.direction != null && _flip.progress <= 0.0001;
     final slideStuck = _slide.direction != null && _slide.progress <= 0.0001;
     if (!flipStuck && !slideStuck) {
@@ -824,12 +831,16 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
 
   void _updateLayoutForSize(Size size) {
     _resetNavigationIfStuck();
-    if (size == _viewSize) {
+    final displayedPages =
+        size.width > size.height && !widget.singlePage ? 2 : 1;
+    final layoutChanged = size != _viewSize;
+    if (size == _viewSize &&
+        displayedPages == _displayedPages &&
+        _didApplyStartPage) {
+      _clampScroll();
       return;
     }
     _viewSize = size;
-    final displayedPages =
-        size.width > size.height && !widget.singlePage ? 2 : 1;
     if (displayedPages != _displayedPages) {
       _flipProgressController.stop();
       _flip.direction = null;
@@ -852,6 +863,9 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
       if (_displayedPages == 2) {
         _currentPage &= ~1;
       }
+      _fixFirstPage();
+      _syncCurrentPages();
+    } else if (layoutChanged || !_didApplyStartPage) {
       _fixFirstPage();
       _syncCurrentPages();
     }
@@ -917,20 +931,17 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
   }
 
   void _goToPage(int? page, {bool notify = true}) {
-    if (page == null || page == _publicPage) {
+    if (page == null) {
+      return;
+    }
+
+    final targetPage = _pageIndexForPublicPage(page);
+    if (targetPage == _currentPage) {
       return;
     }
 
     void apply() {
-      if (widget.pages.isNotEmpty && widget.pages.first == null) {
-        if (_displayedPages == 2 && page == 1) {
-          _currentPage = 0;
-        } else {
-          _currentPage = page;
-        }
-      } else {
-        _currentPage = page - 1;
-      }
+      _currentPage = targetPage;
       _flip.direction = null;
       _flip.progress = 0;
       _flip.frontPage = null;
@@ -961,6 +972,16 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
     } else {
       apply();
     }
+  }
+
+  int _pageIndexForPublicPage(int page) {
+    if (widget.pages.isNotEmpty && widget.pages.first == null) {
+      if (_displayedPages == 2 && page == 1) {
+        return 0;
+      }
+      return page;
+    }
+    return page - 1;
   }
 
   void _resolveFirstImageSize() {
