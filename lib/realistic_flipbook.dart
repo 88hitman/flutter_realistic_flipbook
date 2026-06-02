@@ -24,6 +24,8 @@ enum FlipbookNavigationDirection { left, right }
 
 enum _FlipDirection { left, right }
 
+enum _LandscapeGestureMode { undecided, verticalScroll, horizontalFlip }
+
 class FlipbookPage {
   const FlipbookPage({
     this.image,
@@ -54,6 +56,9 @@ class FlipbookController {
   bool get canFlipRight => _state?._canFlipRight ?? false;
   bool get canZoomIn => _state?._canZoomIn ?? false;
   bool get canZoomOut => _state?._canZoomOut ?? false;
+  double get zoom => _state?._zoom ?? 1;
+  double get minZoom => _state?._minZoom ?? 1;
+  double get maxZoom => _state?._maxZoom ?? 1;
   int get page => _state?._publicPage ?? 1;
   int get numPages => _state?._numPages ?? 0;
 
@@ -61,6 +66,16 @@ class FlipbookController {
   void flipRight() => _state?._flipRight(auto: true);
   void zoomIn([Offset? zoomAt]) => _state?._zoomIn(zoomAt);
   void zoomOut([Offset? zoomAt]) => _state?._zoomOut(zoomAt);
+  void setZoom(
+    double zoom, {
+    Offset? zoomAt,
+    bool animate = false,
+  }) =>
+      _state?._setZoomExternal(
+        zoom,
+        zoomAt: zoomAt,
+        animate: animate,
+      );
   void goToPage(int page) => _state?._goToPage(page);
 
   void _attach(_RealisticFlipbookState state) {
@@ -100,6 +115,7 @@ class RealisticFlipbook extends StatefulWidget {
     this.wheel = FlipbookWheelMode.scroll,
     this.clipToViewport = true,
     this.singlePageSpreadNavigation = true,
+    this.singlePageLandscapeFillWidth = false,
     this.singlePageSlideDuration = const Duration(milliseconds: 320),
     this.paperColor = Colors.white,
     this.bookChrome = false,
@@ -161,6 +177,7 @@ class RealisticFlipbook extends StatefulWidget {
   final FlipbookWheelMode wheel;
   final bool clipToViewport;
   final bool singlePageSpreadNavigation;
+  final bool singlePageLandscapeFillWidth;
   final Duration singlePageSlideDuration;
 
   final Color paperColor;
@@ -221,6 +238,7 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
   double _dragDy = 0;
   double _maxMove = 0;
   _FlipDirection? _blockedSwipeDirection;
+  _LandscapeGestureMode _landscapeGestureMode = _LandscapeGestureMode.undecided;
   MouseCursor? _activeCursor;
 
   double _startScrollLeft = 0;
@@ -262,6 +280,7 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
   int? _rawActivePointer;
   Offset? _rawLastLocal;
   VelocityTracker? _rawVelocityTracker;
+  final Set<int> _rawTrackedPointers = <int>{};
   final Set<int> _preFlipCapturePages = <int>{};
   bool _flipPreparationInProgress = false;
   int _flipPreparationToken = 0;
@@ -360,6 +379,8 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
 
   List<double> get _zooms =>
       widget.zooms.isEmpty ? const <double>[1] : widget.zooms;
+  double get _minZoom => _zooms.reduce(math.min);
+  double get _maxZoom => _zooms.reduce(math.max);
 
   double get _viewWidth => _viewSize.width;
   double get _viewHeight => _viewSize.height;
@@ -380,6 +401,11 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
 
   bool get _navigationInProgress =>
       _flip.direction != null || _slide.direction != null;
+
+  bool get _singlePageLandscapeFillWidthEnabled =>
+      widget.singlePageLandscapeFillWidth &&
+      _displayedPages == 1 &&
+      _viewWidth > _viewHeight;
 
   bool get _hasActivePointer =>
       _touchStart != null || _rawActivePointer != null;
@@ -533,7 +559,9 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
           : _FlipDirection.left;
 
   bool get _singleSpreadNavigationEnabled =>
-      widget.singlePageSpreadNavigation && _displayedPages == 1;
+      widget.singlePageSpreadNavigation &&
+      _displayedPages == 1 &&
+      !_singlePageLandscapeFillWidthEnabled;
 
   bool _isRightSidePage(int pageIndex) {
     if (pageIndex < 0 || pageIndex >= widget.pages.length) {
@@ -679,6 +707,9 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
     }
     final vw = _viewWidth / _displayedPages;
     final xScale = vw / imageWidth;
+    if (_singlePageLandscapeFillWidthEnabled) {
+      return xScale;
+    }
     final yScale = _viewHeight / imageHeight;
     final scale = xScale < yScale ? xScale : yScale;
     return scale < 1 ? scale : 1;
@@ -687,7 +718,9 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
   double get _pageWidth => (_imageWidth ?? 1) * _pageScale;
   double get _pageHeight => (_imageHeight ?? 1) * _pageScale;
   double get _xMargin => (_viewWidth - _pageWidth * _displayedPages) / 2;
-  double get _yMargin => (_viewHeight - _pageHeight) / 2;
+  double get _yMargin => _singlePageLandscapeFillWidthEnabled
+      ? 0
+      : (_viewHeight - _pageHeight) / 2;
 
   double get _polygonWidthRaw {
     final base = _pageWidth / widget.nPolygons;
@@ -915,6 +948,10 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
       _flipProgressController.value = 0;
       _clearFlipPreparationState(invalidateToken: false);
       _syncCurrentPages();
+      if (_singlePageLandscapeFillWidthEnabled && _zoom <= 1) {
+        _scrollLeft = 0;
+        _scrollTop = 0;
+      }
       _preloadImages();
       _resetNavigationWatchdogRecoveryAttempts();
     }
@@ -1761,6 +1798,10 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
       _slide.toPage = null;
       _slide.auto = false;
       _flipProgressController.value = 0;
+      if (_singlePageLandscapeFillWidthEnabled && _zoom <= 1) {
+        _scrollLeft = 0;
+        _scrollTop = 0;
+      }
     });
     _resetNavigationWatchdogRecoveryAttempts();
     _maybeStopNavigationWatchdog();
@@ -1794,6 +1835,10 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
       _slide.toPage = null;
       _slide.auto = false;
       _flipProgressController.value = 0;
+      if (_singlePageLandscapeFillWidthEnabled && _zoom <= 1) {
+        _scrollLeft = 0;
+        _scrollTop = 0;
+      }
     });
     _resetNavigationWatchdogRecoveryAttempts();
     _maybeStopNavigationWatchdog();
@@ -1947,6 +1992,71 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
     }
   }
 
+  int _nearestZoomIndex(double zoom) {
+    var nearest = 0;
+    var nearestDelta = double.infinity;
+    for (var i = 0; i < _zooms.length; i++) {
+      final delta = (_zooms[i] - zoom).abs();
+      if (delta < nearestDelta) {
+        nearestDelta = delta;
+        nearest = i;
+      }
+    }
+    return nearest;
+  }
+
+  void _setZoomExternal(
+    double zoom, {
+    Offset? zoomAt,
+    bool animate = false,
+  }) {
+    if (!mounted || _viewWidth <= 0 || _viewHeight <= 0) {
+      return;
+    }
+    final target = zoom.clamp(_minZoom, _maxZoom).toDouble();
+    if ((target - _zoom).abs() < 1e-4) {
+      return;
+    }
+
+    if (animate) {
+      final nextIndex = _nearestZoomIndex(target);
+      if (_zoomIndex != nextIndex) {
+        setState(() {
+          _zoomIndex = nextIndex;
+        });
+      }
+      _zoomTo(target, zoomAt);
+      return;
+    }
+
+    final fixedX = zoomAt?.dx ?? _viewWidth / 2;
+    final fixedY = zoomAt?.dy ?? _viewHeight / 2;
+    final start = _zoom;
+    final startX = _scrollLeftLimited;
+    final startY = _scrollTopLimited;
+    final containerFixedX = fixedX + startX;
+    final containerFixedY = fixedY + startY;
+    final endX = containerFixedX / start * target - fixedX;
+    final endY = containerFixedY / start * target - fixedY;
+
+    _zoomController.stop();
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _zooming = false;
+      _zoom = target;
+      _scrollLeft = endX;
+      _scrollTop = endY;
+      _zoomIndex = _nearestZoomIndex(target);
+      _clampScroll();
+    });
+
+    if (target > 1) {
+      _preloadImages(true);
+    }
+  }
+
   void _onZoomTick() {
     if (!mounted || !_zooming) {
       return;
@@ -2056,6 +2166,9 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
     _dragDy = 0;
     _maxMove = 0;
     _blockedSwipeDirection = null;
+    _landscapeGestureMode = _LandscapeGestureMode.undecided;
+    _startScrollLeft = _scrollLeftLimited;
+    _startScrollTop = _scrollTopLimited;
     if (_zoom <= 1) {
       if (widget.dragToFlip) {
         setState(() {
@@ -2063,8 +2176,6 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
         });
       }
     } else {
-      _startScrollLeft = _scrollLeftLimited;
-      _startScrollTop = _scrollTopLimited;
       setState(() {
         _activeCursor = SystemMouseCursors.allScroll;
       });
@@ -2089,13 +2200,39 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
 
     if (_zoom > 1) {
       if (widget.dragToScroll) {
+        // `_raw` pointer deltas are computed in content space (divided by zoom).
+        // Re-apply zoom factor so panning feels 1:1 in viewport pixels.
+        final panGain = _zoom;
         setState(() {
-          _scrollLeft = _startScrollLeft - x;
-          _scrollTop = _startScrollTop - y;
+          _scrollLeft = _startScrollLeft - x * panGain;
+          _scrollTop = _startScrollTop - y * panGain;
           _clampScroll();
         });
       }
       return;
+    }
+
+    if (_singlePageLandscapeFillWidthEnabled &&
+        widget.dragToScroll &&
+        _flip.direction == null &&
+        _slide.direction == null) {
+      if (_landscapeGestureMode == _LandscapeGestureMode.undecided) {
+        final decisionThreshold = math.max(widget.swipeMin, 6.0);
+        if (x.abs() >= decisionThreshold || y.abs() >= decisionThreshold) {
+          _landscapeGestureMode = y.abs() > x.abs()
+              ? _LandscapeGestureMode.verticalScroll
+              : _LandscapeGestureMode.horizontalFlip;
+        }
+      }
+
+      if (_landscapeGestureMode == _LandscapeGestureMode.verticalScroll) {
+        setState(() {
+          _activeCursor = SystemMouseCursors.allScroll;
+          _scrollTop = _startScrollTop - y;
+          _clampScroll();
+        });
+        return;
+      }
     }
 
     if (!widget.dragToFlip) {
@@ -2177,6 +2314,17 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
   }
 
   void _onRawPointerDown(PointerDownEvent event) {
+    if (!mounted) {
+      return;
+    }
+    _rawTrackedPointers.add(event.pointer);
+    if (_rawTrackedPointers.length > 1) {
+      _clearRawPointerState();
+      if (_touchStart != null) {
+        _endSwipeGesture(0);
+      }
+      return;
+    }
     if (!widget.dragToFlip && !(_zoom > 1 && widget.dragToScroll)) {
       return;
     }
@@ -2205,6 +2353,12 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
   }
 
   void _onRawPointerMove(PointerMoveEvent event) {
+    if (!mounted) {
+      return;
+    }
+    if (_rawTrackedPointers.length > 1) {
+      return;
+    }
     if (event.pointer != _rawActivePointer) {
       return;
     }
@@ -2223,6 +2377,11 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
   }
 
   void _onRawPointerUp(PointerUpEvent event) {
+    _rawTrackedPointers.remove(event.pointer);
+    if (!mounted) {
+      _clearRawPointerState();
+      return;
+    }
     if (event.pointer != _rawActivePointer) {
       return;
     }
@@ -2234,6 +2393,11 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
   }
 
   void _onRawPointerCancel(PointerCancelEvent event) {
+    _rawTrackedPointers.remove(event.pointer);
+    if (!mounted) {
+      _clearRawPointerState();
+      return;
+    }
     if (event.pointer != _rawActivePointer) {
       return;
     }
@@ -2248,6 +2412,10 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
   }
 
   void _endSwipeGesture(double velocityX) {
+    if (!mounted) {
+      _clearRawPointerState();
+      return;
+    }
     if (_touchStart == null) {
       return;
     }
@@ -2288,16 +2456,24 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
       }
     }
 
+    if (!mounted) {
+      _clearRawPointerState();
+      return;
+    }
     setState(() {
       _touchStart = null;
       _lastTouch = null;
       _activeCursor = null;
       _blockedSwipeDirection = null;
+      _landscapeGestureMode = _LandscapeGestureMode.undecided;
     });
     _maybeStopNavigationWatchdog();
   }
 
   void _onPointerSignal(PointerSignalEvent event) {
+    if (!mounted) {
+      return;
+    }
     if (event is! PointerScrollEvent) {
       return;
     }
@@ -2392,6 +2568,8 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
         final showSingleRight = !useSingleSpreadLayout
             ? _showRightPage
             : _hasRenderablePage(singleRightPage);
+        final hideFixedPageDuringFlip =
+            _singlePageLandscapeFillWidthEnabled && _flip.direction != null;
         final widgetCapturePages = _widgetCaptureCandidates().toList()..sort();
         final needsWidgetSnapshotRequest = widgetCapturePages.any(
           (page) =>
@@ -2427,8 +2605,14 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
         final visibleFixedPages = <int>{
           if (useSingleSpreadLayout && showSingleLeft) singleLeftPage,
           if (useSingleSpreadLayout && showSingleRight) singleRightPage,
-          if (!useSingleSpreadLayout && _showLeftPage) _leftPage,
-          if (!useSingleSpreadLayout && _showRightPage) _rightPage,
+          if (!useSingleSpreadLayout &&
+              !hideFixedPageDuringFlip &&
+              _showLeftPage)
+            _leftPage,
+          if (!useSingleSpreadLayout &&
+              !hideFixedPageDuringFlip &&
+              _showRightPage)
+            _rightPage,
         };
 
         final widgetOverlayPages = <int>{
@@ -2486,7 +2670,9 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
               width: pageWidth,
               height: pageHeight,
             )
-          else if (!useSingleSpreadLayout && _showLeftPage)
+          else if (!useSingleSpreadLayout &&
+              !hideFixedPageDuringFlip &&
+              _showLeftPage)
             _buildFixedPage(
               pageIndex: _leftPage,
               left: xMargin,
@@ -2502,7 +2688,9 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
               width: pageWidth,
               height: pageHeight,
             )
-          else if (!useSingleSpreadLayout && _showRightPage)
+          else if (!useSingleSpreadLayout &&
+              !hideFixedPageDuringFlip &&
+              _showRightPage)
             _buildFixedPage(
               pageIndex: _rightPage,
               left: _viewWidth / 2,
