@@ -5,10 +5,14 @@ import 'dart:ui' as ui;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/physics.dart';
 import 'package:flutter/rendering.dart';
 
 typedef FlipbookPageCallback = void Function(int page);
 typedef FlipbookZoomCallback = void Function(double zoom);
+typedef FlipbookDiagnosticsCallback = void Function(
+  FlipbookDiagnostics diagnostics,
+);
 typedef FlipbookFlipGuardCallback = bool Function(
   int currentPage,
   int targetPage,
@@ -21,6 +25,58 @@ enum FlipbookForwardDirection { right, left }
 enum FlipbookWheelMode { scroll, zoom }
 
 enum FlipbookNavigationDirection { left, right }
+
+enum FlipbookNavigationPhase { idle, preparation, flip, slide }
+
+enum FlipbookSnapshotPreparationMode { waitForTextures, instantFallback }
+
+enum FlipbookAutoPhysics { animationController, spring }
+
+class FlipbookDiagnostics {
+  const FlipbookDiagnostics({
+    required this.publicPage,
+    required this.phase,
+    required this.direction,
+    required this.progress,
+    required this.auto,
+    required this.snapshotPreparationInProgress,
+    required this.snapshotsCached,
+    required this.snapshotsQueued,
+    required this.snapshotsInFlight,
+    required this.lastPreparationDuration,
+    required this.lastGestureToFlipStart,
+    required this.navigationQueueDepth,
+  });
+
+  final int publicPage;
+  final FlipbookNavigationPhase phase;
+  final FlipbookNavigationDirection? direction;
+  final double progress;
+  final bool auto;
+  final bool snapshotPreparationInProgress;
+  final int snapshotsCached;
+  final int snapshotsQueued;
+  final int snapshotsInFlight;
+  final Duration? lastPreparationDuration;
+  final Duration? lastGestureToFlipStart;
+  final int navigationQueueDepth;
+
+  @override
+  String toString() {
+    return 'FlipbookDiagnostics('
+        'page: $publicPage, '
+        'phase: ${phase.name}, '
+        'direction: ${direction?.name}, '
+        'progress: ${progress.toStringAsFixed(3)}, '
+        'auto: $auto, '
+        'preparing: $snapshotPreparationInProgress, '
+        'snapshots: $snapshotsCached/$snapshotsQueued/$snapshotsInFlight, '
+        'prep: ${lastPreparationDuration?.inMilliseconds}, '
+        'gestureToFlip: ${lastGestureToFlipStart?.inMilliseconds}, '
+        'queue: $navigationQueueDepth'
+        ')';
+  }
+}
 
 enum _FlipDirection { left, right }
 
@@ -117,6 +173,16 @@ class RealisticFlipbook extends StatefulWidget {
     this.singlePageSpreadNavigation = true,
     this.singlePageLandscapeFillWidth = false,
     this.singlePageSlideDuration = const Duration(milliseconds: 320),
+    this.enableDiagnostics = false,
+    this.debugLogs = false,
+    this.onDiagnosticsChanged,
+    this.snapshotPreparationMode =
+        FlipbookSnapshotPreparationMode.waitForTextures,
+    this.interruptibleFlips = false,
+    this.queuedNavigation = false,
+    this.autoPhysics = FlipbookAutoPhysics.animationController,
+    this.multiPageFling = false,
+    this.maxFlingPages = 3,
     this.paperColor = Colors.white,
     this.bookChrome = false,
     this.bookTopInsetRatio = 0.075,
@@ -145,6 +211,7 @@ class RealisticFlipbook extends StatefulWidget {
           singlePageSlideDuration > Duration.zero,
           'singlePageSlideDuration must be > 0.',
         ),
+        assert(maxFlingPages >= 1),
         assert(bookTopInsetRatio >= 0 && bookTopInsetRatio <= 0.3),
         assert(bookBottomInsetRatio >= 0 && bookBottomInsetRatio <= 0.3),
         assert(bookSideInsetRatio >= 0 && bookSideInsetRatio <= 0.2),
@@ -179,6 +246,15 @@ class RealisticFlipbook extends StatefulWidget {
   final bool singlePageSpreadNavigation;
   final bool singlePageLandscapeFillWidth;
   final Duration singlePageSlideDuration;
+  final bool enableDiagnostics;
+  final bool debugLogs;
+  final FlipbookDiagnosticsCallback? onDiagnosticsChanged;
+  final FlipbookSnapshotPreparationMode snapshotPreparationMode;
+  final bool interruptibleFlips;
+  final bool queuedNavigation;
+  final FlipbookAutoPhysics autoPhysics;
+  final bool multiPageFling;
+  final int maxFlingPages;
 
   final Color paperColor;
   final bool bookChrome;
@@ -238,6 +314,7 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
   double _dragDy = 0;
   double _maxMove = 0;
   _FlipDirection? _blockedSwipeDirection;
+  bool _interruptedNavigationDrag = false;
   _LandscapeGestureMode _landscapeGestureMode = _LandscapeGestureMode.undecided;
   MouseCursor? _activeCursor;
 
@@ -291,6 +368,13 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
   Timer? _navigationWatchdogTimer;
   DateTime _lastInteractionAt = DateTime.fromMillisecondsSinceEpoch(0);
   int _navigationWatchdogRecoveryAttempts = 0;
+  DateTime? _lastGestureStartedAt;
+  DateTime? _flipPreparationStartedAt;
+  Duration? _lastPreparationDuration;
+  Duration? _lastGestureToFlipStart;
+  _FlipDirection? _queuedNavigationDirection;
+  int _queuedNavigationDepth = 0;
+  bool _consumingQueuedNavigation = false;
 
   @override
   void initState() {
@@ -371,6 +455,7 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
     _widgetSnapshotUpdatedAt.clear();
     _lastWidgetCaptureWidth = 0;
     _lastWidgetCaptureHeight = 0;
+    _clearNavigationQueue();
     _clearFlipPreparationState(invalidateToken: false);
     _flipProgressController.dispose();
     _zoomController.dispose();
@@ -401,6 +486,69 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
 
   bool get _navigationInProgress =>
       _flip.direction != null || _slide.direction != null;
+
+  FlipbookNavigationPhase get _diagnosticPhase {
+    if (_flipPreparationInProgress) {
+      return FlipbookNavigationPhase.preparation;
+    }
+    if (_flip.direction != null) {
+      return FlipbookNavigationPhase.flip;
+    }
+    if (_slide.direction != null) {
+      return FlipbookNavigationPhase.slide;
+    }
+    return FlipbookNavigationPhase.idle;
+  }
+
+  FlipbookNavigationDirection? get _diagnosticDirection {
+    final direction = _flip.direction ?? _slide.direction;
+    if (direction == null) {
+      return null;
+    }
+    return direction == _FlipDirection.left
+        ? FlipbookNavigationDirection.left
+        : FlipbookNavigationDirection.right;
+  }
+
+  double get _diagnosticProgress {
+    if (_flip.direction != null) {
+      return _flip.progress.clamp(0.0, 1.0).toDouble();
+    }
+    if (_slide.direction != null) {
+      return _slide.progress.clamp(0.0, 1.0).toDouble();
+    }
+    return 0;
+  }
+
+  bool get _diagnosticsEnabled =>
+      widget.enableDiagnostics ||
+      widget.debugLogs ||
+      widget.onDiagnosticsChanged != null;
+
+  void _emitDiagnostics({String? event, bool log = false}) {
+    if (!_diagnosticsEnabled) {
+      return;
+    }
+    final diagnostics = FlipbookDiagnostics(
+      publicPage: _publicPage,
+      phase: _diagnosticPhase,
+      direction: _diagnosticDirection,
+      progress: _diagnosticProgress,
+      auto: _flip.auto || _slide.auto,
+      snapshotPreparationInProgress: _flipPreparationInProgress,
+      snapshotsCached: _widgetSnapshotProviders.length,
+      snapshotsQueued: _widgetSnapshotQueued.length,
+      snapshotsInFlight: _widgetSnapshotInFlight.length,
+      lastPreparationDuration: _lastPreparationDuration,
+      lastGestureToFlipStart: _lastGestureToFlipStart,
+      navigationQueueDepth: _queuedNavigationDepth,
+    );
+    widget.onDiagnosticsChanged?.call(diagnostics);
+    if (widget.debugLogs && kDebugMode && log) {
+      final prefix = event == null ? '' : '$event ';
+      debugPrint('RealisticFlipbook $prefix$diagnostics');
+    }
+  }
 
   bool get _singlePageLandscapeFillWidthEnabled =>
       widget.singlePageLandscapeFillWidth &&
@@ -1374,6 +1522,71 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
     });
   }
 
+  void _clearNavigationQueue() {
+    _queuedNavigationDirection = null;
+    _queuedNavigationDepth = 0;
+    _consumingQueuedNavigation = false;
+  }
+
+  void _queueNavigation(_FlipDirection direction) {
+    if (!widget.queuedNavigation && !widget.multiPageFling) {
+      return;
+    }
+    if (_queuedNavigationDirection == null ||
+        _queuedNavigationDirection == direction) {
+      _queuedNavigationDirection = direction;
+      _queuedNavigationDepth = (_queuedNavigationDepth + 1).clamp(0, 12);
+    } else {
+      _queuedNavigationDepth -= 1;
+      if (_queuedNavigationDepth <= 0) {
+        _queuedNavigationDirection = null;
+        _queuedNavigationDepth = 0;
+      }
+    }
+    _emitDiagnostics(event: 'queue', log: true);
+  }
+
+  void _queueAdditionalNavigation(_FlipDirection direction, int additional) {
+    for (var i = 0; i < additional; i++) {
+      _queueNavigation(direction);
+    }
+  }
+
+  void _consumeQueuedNavigationSoon() {
+    if (_consumingQueuedNavigation || _queuedNavigationDepth <= 0) {
+      return;
+    }
+    _consumingQueuedNavigation = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _consumingQueuedNavigation = false;
+      if (!mounted || _queuedNavigationDepth <= 0) {
+        return;
+      }
+      if (_navigationInProgress) {
+        _consumeQueuedNavigationSoon();
+        return;
+      }
+      final direction = _queuedNavigationDirection;
+      if (direction == null) {
+        return;
+      }
+      final canFlip = direction == _FlipDirection.left
+          ? _canFlipLeft && _canStartFlip(direction, auto: true)
+          : _canFlipRight && _canStartFlip(direction, auto: true);
+      if (!canFlip) {
+        _clearNavigationQueue();
+        _emitDiagnostics(event: 'queue-cleared', log: true);
+        return;
+      }
+      _queuedNavigationDepth -= 1;
+      if (_queuedNavigationDepth <= 0) {
+        _queuedNavigationDirection = null;
+      }
+      _emitDiagnostics(event: 'queue-consume', log: true);
+      _flipStart(direction, true);
+    });
+  }
+
   void _clearFlipPreparationState({
     bool notify = false,
     bool invalidateToken = true,
@@ -1451,6 +1664,8 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
     }
 
     _clearFlipPreparationState(invalidateToken: true);
+    _flipPreparationStartedAt = DateTime.now();
+    _lastPreparationDuration = null;
     _flipPreparationInProgress = true;
     _pendingFlipDirection = direction;
     _pendingFlipAuto = auto;
@@ -1468,8 +1683,12 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
         ignoreThrottle: true,
       );
     }
+    _emitDiagnostics(event: 'prepare-start', log: true);
 
     final ready = await _waitForCriticalTextures(criticalPages);
+    final startedAt = _flipPreparationStartedAt;
+    _lastPreparationDuration =
+        startedAt == null ? null : DateTime.now().difference(startedAt);
 
     if (!mounted || token != _flipPreparationToken) {
       return;
@@ -1514,6 +1733,9 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
   }
 
   void _flipLeft({required bool auto}) {
+    if (_handleActiveNavigationCommand(_FlipDirection.left, auto: auto)) {
+      return;
+    }
     if (_slide.direction != null || !_canFlipLeft) {
       return;
     }
@@ -1524,6 +1746,9 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
   }
 
   void _flipRight({required bool auto}) {
+    if (_handleActiveNavigationCommand(_FlipDirection.right, auto: auto)) {
+      return;
+    }
     if (_slide.direction != null || !_canFlipRight) {
       return;
     }
@@ -1531,6 +1756,34 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
       return;
     }
     _flipStart(_FlipDirection.right, auto);
+  }
+
+  bool _handleActiveNavigationCommand(
+    _FlipDirection direction, {
+    required bool auto,
+  }) {
+    final activeDirection = _flip.direction ?? _slide.direction;
+    if (activeDirection == null) {
+      return false;
+    }
+    if (activeDirection == direction) {
+      if (auto && widget.queuedNavigation) {
+        _queueNavigation(direction);
+      }
+      return true;
+    }
+    if (widget.interruptibleFlips &&
+        auto &&
+        (_flip.auto || _slide.auto || _flipProgressController.isAnimating)) {
+      _flipProgressController.stop();
+      if (_flip.direction != null) {
+        unawaited(_flipRevert());
+      } else if (_slide.direction != null) {
+        unawaited(_slideRevert());
+      }
+      _emitDiagnostics(event: 'interrupt-revert', log: true);
+    }
+    return true;
   }
 
   void _flipStart(_FlipDirection direction, bool auto) {
@@ -1554,10 +1807,20 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
 
     final criticalPages = _criticalPagesNeedingTexture(frontPage, backPage);
     if (criticalPages.isNotEmpty) {
-      unawaited(
-        _beginFlipWithPreparedTextures(direction, auto, frontPage, backPage),
-      );
-      return;
+      if (widget.snapshotPreparationMode ==
+          FlipbookSnapshotPreparationMode.instantFallback) {
+        _requestWidgetSnapshots(
+          criticalPages,
+          forceRefresh: true,
+          refreshStaticFallbackWidgets: true,
+          ignoreThrottle: true,
+        );
+      } else {
+        unawaited(
+          _beginFlipWithPreparedTextures(direction, auto, frontPage, backPage),
+        );
+        return;
+      }
     }
 
     _startFlipAnimation(
@@ -1582,6 +1845,9 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
     final backProvider = _pageProvider(backPage);
 
     _flipProgressController.stop();
+    _lastGestureToFlipStart = _lastGestureStartedAt == null
+        ? null
+        : DateTime.now().difference(_lastGestureStartedAt!);
     _flipProgressController.value = 0;
     setState(() {
       _clearFlipPreparationState(invalidateToken: false);
@@ -1593,6 +1859,7 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
       _flip.backProvider = backProvider;
       _flip.auto = false;
     });
+    _emitDiagnostics(event: 'flip-start', log: true);
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || _flip.direction != direction) {
@@ -1643,6 +1910,7 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
       _slide.toPage = toPage;
       _slide.auto = false;
     });
+    _emitDiagnostics(event: 'slide-start', log: true);
 
     final targetHiRes = _pageProvider(toPage, hiRes: true);
     if (targetHiRes != null) {
@@ -1671,9 +1939,10 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
     });
 
     _emitFlipStart(direction);
+    _emitDiagnostics(event: 'flip-auto', log: true);
 
     try {
-      await _flipProgressController.animateTo(
+      await _animateProgressTo(
         1,
         duration: Duration(milliseconds: durationMs),
         curve: ease ? Curves.easeInOut : Curves.linear,
@@ -1711,7 +1980,7 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
     _emitFlipStart(direction);
 
     try {
-      await _flipProgressController.animateTo(
+      await _animateProgressTo(
         1,
         duration: Duration(milliseconds: durationMs),
         curve: ease ? Curves.easeInOut : Curves.linear,
@@ -1729,6 +1998,31 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
     _completeSlide(direction);
   }
 
+  Future<void> _animateProgressTo(
+    double target, {
+    required Duration duration,
+    required Curve curve,
+  }) {
+    if (widget.autoPhysics == FlipbookAutoPhysics.spring) {
+      final simulation = SpringSimulation(
+        SpringDescription.withDampingRatio(
+          mass: 1,
+          stiffness: 150,
+          ratio: 0.92,
+        ),
+        _flipProgressController.value,
+        target,
+        0,
+      );
+      return _flipProgressController.animateWith(simulation);
+    }
+    return _flipProgressController.animateTo(
+      target,
+      duration: duration,
+      curve: curve,
+    );
+  }
+
   Future<void> _flipRevert() async {
     final direction = _flip.direction;
     if (direction == null) {
@@ -1744,7 +2038,7 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
       _flip.auto = true;
     });
     try {
-      await _flipProgressController.animateBack(
+      await _animateProgressTo(
         0,
         duration: Duration(milliseconds: durationMs),
         curve: Curves.linear,
@@ -1777,7 +2071,7 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
       _slide.auto = true;
     });
     try {
-      await _flipProgressController.animateBack(
+      await _animateProgressTo(
         0,
         duration: Duration(milliseconds: durationMs),
         curve: Curves.linear,
@@ -1827,6 +2121,8 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
     _resetNavigationWatchdogRecoveryAttempts();
     _maybeStopNavigationWatchdog();
     _emitFlipEnd(direction);
+    _emitDiagnostics(event: 'flip-complete', log: true);
+    _consumeQueuedNavigationSoon();
     _preloadImages();
     _refreshVisibleWidgetSnapshotsAfterNavigation();
   }
@@ -1864,11 +2160,14 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
     _resetNavigationWatchdogRecoveryAttempts();
     _maybeStopNavigationWatchdog();
     _emitFlipEnd(direction);
+    _emitDiagnostics(event: 'slide-complete', log: true);
+    _consumeQueuedNavigationSoon();
     _preloadImages();
     _refreshVisibleWidgetSnapshotsAfterNavigation();
   }
 
   void _cancelFlip() {
+    _clearNavigationQueue();
     _clearFlipPreparationState(invalidateToken: false);
     setState(() {
       _firstPage = _currentPage;
@@ -1895,6 +2194,7 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
   }
 
   void _cancelSlide() {
+    _clearNavigationQueue();
     _clearFlipPreparationState(invalidateToken: false);
     setState(() {
       _slide.direction = null;
@@ -1936,6 +2236,9 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
       setState(() {
         _flip.progress = value;
       });
+      if (widget.enableDiagnostics) {
+        _emitDiagnostics();
+      }
       return;
     }
     if (_slide.direction != null) {
@@ -1945,6 +2248,9 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
       setState(() {
         _slide.progress = value;
       });
+      if (widget.enableDiagnostics) {
+        _emitDiagnostics();
+      }
     }
   }
 
@@ -2111,6 +2417,7 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
   }
 
   void _onTapUp(TapUpDetails details) {
+    _lastGestureStartedAt = DateTime.now();
     if (!widget.tapToFlip && !widget.clickToZoom) {
       return;
     }
@@ -2179,17 +2486,39 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
   }
 
   void _startSwipe(Offset local) {
+    _lastGestureStartedAt = DateTime.now();
     _resetNavigationIfStuck();
     _markInteraction();
+    if (!_navigationInProgress && _queuedNavigationDepth > 0) {
+      _clearNavigationQueue();
+      _emitDiagnostics(event: 'queue-cleared-manual', log: true);
+    }
     _touchStart = local;
     _lastTouch = local;
     _dragDx = 0;
     _dragDy = 0;
     _maxMove = 0;
     _blockedSwipeDirection = null;
+    _interruptedNavigationDrag = false;
     _landscapeGestureMode = _LandscapeGestureMode.undecided;
     _startScrollLeft = _scrollLeftLimited;
     _startScrollTop = _scrollTopLimited;
+    if (widget.interruptibleFlips &&
+        (_flip.auto || _slide.auto || _flipProgressController.isAnimating)) {
+      _interruptedNavigationDrag = true;
+      _flipProgressController.stop();
+      _flip.auto = false;
+      _slide.auto = false;
+      final activeDirection = _flip.direction ?? _slide.direction;
+      final progress =
+          _flip.direction != null ? _flip.progress : _slide.progress;
+      if (activeDirection == _FlipDirection.left) {
+        _dragDx = progress * _pageWidth;
+      } else if (activeDirection == _FlipDirection.right) {
+        _dragDx = -progress * _pageWidth;
+      }
+      _emitDiagnostics(event: 'interrupt-drag', log: true);
+    }
     if (_zoom <= 1) {
       if (widget.dragToFlip) {
         setState(() {
@@ -2457,20 +2786,48 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
 
     if (_slide.direction != null && !_slide.auto) {
       const velocityThreshold = 700.0;
+      const interruptedVelocityThreshold = 120.0;
+      final threshold = _interruptedNavigationDrag
+          ? interruptedVelocityThreshold
+          : velocityThreshold;
+      final hasIntentionalRelease = velocityX.abs() > threshold;
       final forwardFling = _slide.direction == _FlipDirection.left
-          ? velocityX > velocityThreshold
-          : velocityX < -velocityThreshold;
-      if (_slide.progress >= widget.flipThreshold || forwardFling) {
+          ? velocityX > threshold
+          : velocityX < -threshold;
+      final shouldComplete = hasIntentionalRelease
+          ? forwardFling
+          : _slide.progress >= widget.flipThreshold;
+      if (shouldComplete) {
+        if (forwardFling && widget.multiPageFling) {
+          _queueAdditionalNavigation(
+            _slide.direction!,
+            _additionalFlingPages(velocityX),
+          );
+        }
         unawaited(_slideAuto(ease: false));
       } else {
         unawaited(_slideRevert());
       }
     } else if (_flip.direction != null && !_flip.auto) {
       const velocityThreshold = 700.0;
+      const interruptedVelocityThreshold = 120.0;
+      final threshold = _interruptedNavigationDrag
+          ? interruptedVelocityThreshold
+          : velocityThreshold;
+      final hasIntentionalRelease = velocityX.abs() > threshold;
       final forwardFling = _flip.direction == _FlipDirection.left
-          ? velocityX > velocityThreshold
-          : velocityX < -velocityThreshold;
-      if (_flip.progress >= widget.flipThreshold || forwardFling) {
+          ? velocityX > threshold
+          : velocityX < -threshold;
+      final shouldComplete = hasIntentionalRelease
+          ? forwardFling
+          : _flip.progress >= widget.flipThreshold;
+      if (shouldComplete) {
+        if (forwardFling && widget.multiPageFling) {
+          _queueAdditionalNavigation(
+            _flip.direction!,
+            _additionalFlingPages(velocityX),
+          );
+        }
         unawaited(_flipAuto(ease: false));
       } else {
         unawaited(_flipRevert());
@@ -2486,9 +2843,15 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
       _lastTouch = null;
       _activeCursor = null;
       _blockedSwipeDirection = null;
+      _interruptedNavigationDrag = false;
       _landscapeGestureMode = _LandscapeGestureMode.undecided;
     });
     _maybeStopNavigationWatchdog();
+  }
+
+  int _additionalFlingPages(double velocityX) {
+    final extra = ((velocityX.abs() - 700) / 900).floor();
+    return extra.clamp(0, widget.maxFlingPages - 1);
   }
 
   void _onPointerSignal(PointerSignalEvent event) {
