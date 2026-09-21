@@ -116,6 +116,9 @@ class FlipbookController {
   double get minZoom => _state?._minZoom ?? 1;
   double get maxZoom => _state?._maxZoom ?? 1;
   int get page => _state?._publicPage ?? 1;
+
+  /// 2 while the book shows a spread, 1 in single-page layout.
+  int get displayedPages => _state?._displayedPages ?? 1;
   int get numPages => _state?._numPages ?? 0;
 
   void flipLeft() => _state?._flipLeft(auto: true);
@@ -1083,7 +1086,12 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
       return;
     }
 
-    final targetPage = _pageIndexForPublicPage(page);
+    var targetPage = _pageIndexForPublicPage(page);
+    // A spread always opens on its first page, as the layout switch does;
+    // opening on the second one would pair it with the next spread's page.
+    if (_displayedPages == 2) {
+      targetPage &= ~1;
+    }
     if (targetPage == _currentPage) {
       return;
     }
