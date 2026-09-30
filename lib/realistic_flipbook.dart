@@ -435,6 +435,7 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
   double _releaseProgress = 0;
   double _physicalTarget = 1;
   double _releasePan = 0;
+  double _slideTarget = 1;
   double? _releaseVelocity;
   double _progressVelocity = 0;
   double _lastProgressValue = 0;
@@ -2177,21 +2178,8 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
     if (_usePhysical && _flip.direction != null) {
       return _animatePhysicalFlipTo(target);
     }
-    if (_usePhysical && _slide.direction != null) {
-      final velocity = _releaseVelocity ?? 0;
-      _releaseVelocity = null;
-      final simulation = SpringSimulation(
-        SpringDescription.withDampingRatio(
-          mass: 1,
-          stiffness: 260,
-          ratio: 1,
-        ),
-        _flipProgressController.value,
-        target,
-        velocity,
-        tolerance: const Tolerance(distance: 0.0005, velocity: 0.01),
-      );
-      return _flipProgressController.animateWith(simulation);
+    if (_slide.direction != null) {
+      _slideTarget = target;
     }
     // A page let go by the finger keeps its speed, then eases in. Taps and
     // programmatic turns keep their curve.
@@ -4404,6 +4392,19 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
   /// The air cushion and the small bounce are for the eye: a new gesture or
   /// command must start the next turn, not catch the page that is landing.
   bool _finishLandingTurn() {
+    final slideDirection = _slide.direction;
+    if (_usePhysical &&
+        slideDirection != null &&
+        _flipProgressController.isAnimating &&
+        (_slideTarget - _flipProgressController.value).abs() <= 0.12) {
+      _flipProgressController.stop();
+      if (_slideTarget >= 1) {
+        _completeSlide(slideDirection);
+      } else {
+        _cancelSlide();
+      }
+      return true;
+    }
     final direction = _flip.direction;
     if (!_usePhysical ||
         direction == null ||

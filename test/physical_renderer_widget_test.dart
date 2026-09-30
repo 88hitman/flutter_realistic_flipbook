@@ -148,6 +148,81 @@ void main() {
     expect(controller.page, 7);
   });
 
+  for (final renderer in FlipbookRenderer.values) {
+    testWidgets(
+        'on a phone, quick successive swipes each move one page '
+        '(${renderer.name})', (tester) async {
+      final controller = FlipbookController();
+      FlipbookDiagnostics? last;
+      tester.view.physicalSize = const Size(390, 760);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: RealisticFlipbook(
+            controller: controller,
+            pages: List<FlipbookPage?>.generate(
+              12,
+              (index) => FlipbookPage(
+                sizeHint: const Size(480, 760),
+                widgetBuilder: (_) =>
+                    ColoredBox(color: Colors.primaries[index]),
+              ),
+            ),
+            startPage: 3,
+            forwardDirection: FlipbookForwardDirection.left,
+            allowPageWidgetGestures: true,
+            tapToFlip: false,
+            clickToZoom: false,
+            interruptibleFlips: true,
+            swipeMin: 18,
+            flipThreshold: 0.1,
+            flipDuration: const Duration(milliseconds: 950),
+            renderer: renderer,
+            physicalStyle: const FlipbookPhysicalStyle(haptics: false),
+            enableDiagnostics: true,
+            onDiagnosticsChanged: (d) => last = d,
+          ),
+        ),
+      );
+      await _frames(tester, count: 20);
+
+      // A reader's quick flick toward the next page.
+      Future<void> flick() async {
+        final gesture = await tester.startGesture(const Offset(40, 400));
+        var stamp = Duration.zero;
+        for (var k = 0; k < 8; k++) {
+          stamp += const Duration(milliseconds: 16);
+          await gesture.moveBy(const Offset(18, 0), timeStamp: stamp);
+          await tester.pump(const Duration(milliseconds: 16));
+        }
+        await gesture.up(timeStamp: stamp);
+      }
+
+      // Each next flick comes as soon as the page is landing, as a reader
+      // does, never later than the strips engine allows.
+      for (var i = 0; i < 4; i++) {
+        await flick();
+        var busy = 0;
+        while (busy < 300) {
+          final d = last;
+          if (d == null || d.phase == FlipbookNavigationPhase.idle) break;
+          if (renderer == FlipbookRenderer.physical && d.progress >= 0.9) {
+            break;
+          }
+          await tester.pump(const Duration(milliseconds: 8));
+          busy++;
+        }
+        if (i == 0) {
+          // The first move is a slide within the spread: no lingering tail.
+          expect(busy * 8, lessThanOrEqualTo(260));
+        }
+      }
+      await _frames(tester, count: 120);
+      expect(controller.page, 7);
+    });
+  }
+
   testWidgets('a released page completes the turn', (tester) async {
     final controller = FlipbookController();
     tester.view.physicalSize = const Size(1000, 700);
