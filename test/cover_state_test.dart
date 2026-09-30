@@ -20,6 +20,19 @@ List<FlipbookPage?> _imagePages({
   ];
 }
 
+List<FlipbookPage?> _widgetPages({int count = 4}) {
+  return List<FlipbookPage?>.generate(
+    count,
+    (index) => FlipbookPage(
+      sizeHint: const Size(384, 658),
+      widgetBuilder: (_) => ColoredBox(
+        color: index.isEven ? Colors.white : Colors.grey.shade100,
+        child: Center(child: Text('Page $index')),
+      ),
+    ),
+  );
+}
+
 Future<void> _pumpBook(
   WidgetTester tester, {
   required FlipbookController controller,
@@ -298,5 +311,26 @@ void main() {
     await tester.pumpAndSettle(const Duration(milliseconds: 20));
 
     expect(controller.page, 3);
+  });
+
+  testWidgets('widget pages can move between snapshot and visible hosts safely',
+      (tester) async {
+    final controller = FlipbookController();
+
+    await _pumpBook(
+      tester,
+      controller: controller,
+      pages: _widgetPages(count: 5),
+      singlePage: true,
+      snapshotPreparationMode: FlipbookSnapshotPreparationMode.instantFallback,
+    );
+
+    for (final page in <int>[2, 3, 1, 4, 2]) {
+      controller.goToPage(page);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 50));
+      await tester.pump();
+      expect(tester.takeException(), isNull);
+    }
   });
 }

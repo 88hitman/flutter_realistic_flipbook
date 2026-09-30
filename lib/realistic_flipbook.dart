@@ -86,6 +86,7 @@ class FlipbookPage {
   const FlipbookPage({
     this.image,
     this.widgetBuilder,
+    this.prepareSnapshot,
     this.sizeHint,
     this.hiResImage,
     this.headerText,
@@ -98,6 +99,11 @@ class FlipbookPage {
 
   final ImageProvider? image;
   final WidgetBuilder? widgetBuilder;
+
+  /// Resolves asynchronous content before a widget page is captured.
+  /// Load the same images/data used by [widgetBuilder]. The engine waits for
+  /// them to paint and never caches a loading frame as a ready page texture.
+  final Future<void> Function(BuildContext context)? prepareSnapshot;
   final Size? sizeHint;
   final ImageProvider? hiResImage;
   final String? headerText;
@@ -350,10 +356,16 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
 
   ImageStream? _metricStream;
   ImageStreamListener? _metricListener;
+  // A page can move between the visible spread and the hidden snapshot host
+  // during the same rebuild. Reusing one GlobalKey for both locations makes
+  // Flutter try to retake an element before its old parent deactivates it.
+  // Keep one stable key per host instead.
   final Map<int, GlobalKey> _widgetCaptureKeys = <int, GlobalKey>{};
+  final Map<int, GlobalKey> _visibleWidgetCaptureKeys = <int, GlobalKey>{};
   final Map<int, ui.Image> _widgetSnapshotProviders = <int, ui.Image>{};
   final Set<int> _widgetSnapshotQueued = <int>{};
-  final Set<int> _widgetSnapshotInFlight = <int>{};
+  final Map<int, Object> _widgetSnapshotInFlight = <int, Object>{};
+  int _widgetSnapshotGeneration = 0;
   final Map<int, DateTime> _widgetSnapshotUpdatedAt = <int, DateTime>{};
   double _lastWidgetCaptureWidth = 0;
   double _lastWidgetCaptureHeight = 0;
@@ -417,8 +429,10 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
       _imageWidth = null;
       _imageHeight = null;
       _didApplyStartPage = false;
+      _widgetSnapshotGeneration += 1;
       _widgetSnapshotProviders.clear();
       _widgetCaptureKeys.clear();
+      _visibleWidgetCaptureKeys.clear();
       _widgetSnapshotQueued.clear();
       _widgetSnapshotInFlight.clear();
       _widgetSnapshotUpdatedAt.clear();
@@ -451,8 +465,10 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
         image.dispose();
       } catch (_) {}
     }
+    _widgetSnapshotGeneration += 1;
     _widgetSnapshotProviders.clear();
     _widgetCaptureKeys.clear();
+    _visibleWidgetCaptureKeys.clear();
     _widgetSnapshotQueued.clear();
     _widgetSnapshotInFlight.clear();
     _widgetSnapshotUpdatedAt.clear();
@@ -1239,6 +1255,13 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
     );
   }
 
+  GlobalKey _visibleCaptureKeyForPage(int page) {
+    return _visibleWidgetCaptureKeys.putIfAbsent(
+      page,
+      () => GlobalKey(debugLabel: 'flipbook_visible_capture_$page'),
+    );
+  }
+
   Set<int> _widgetCaptureCandidates() {
     final candidates = <int>{};
     void add(int? page) {
@@ -1250,7 +1273,7 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
       }
     }
 
-    for (int i = _currentPage - 1; i <= _currentPage + 1; i++) {
+    for (int i = _currentPage - 3; i <= _currentPage + 3; i++) {
       add(i);
     }
     add(_leftPage);
@@ -1304,7 +1327,7 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
           !refreshStaticFallbackWidgets) {
         continue;
       }
-      if (_widgetSnapshotInFlight.contains(page) ||
+      if (_widgetSnapshotInFlight.containsKey(page) ||
           _widgetSnapshotQueued.contains(page)) {
         continue;
       }
@@ -1324,6 +1347,9 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
       _widgetSnapshotQueued.add(page);
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _widgetSnapshotQueued.remove(page);
+        if (!mounted || !_pageIsWidget(page)) {
+          return;
+        }
         unawaited(_captureWidgetSnapshot(page));
       });
     }
@@ -1370,37 +1396,77 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
 
   Future<void> _captureWidgetSnapshot(int page) async {
     if (!mounted ||
-        _widgetSnapshotInFlight.contains(page) ||
+        _widgetSnapshotInFlight.containsKey(page) ||
         !_pageIsWidget(page)) {
       return;
     }
-    final key = _widgetCaptureKeys[page];
-    final captureContext = key?.currentContext;
-    if (captureContext == null) {
-      if (_pageRequiresWidgetSnapshot(page)) {
-        _requestWidgetSnapshots(<int>[page]);
-      }
-      return;
-    }
-    final renderObject = captureContext.findRenderObject();
-    if (renderObject is! RenderRepaintBoundary) {
-      _requestWidgetSnapshots(<int>[page]);
-      return;
-    }
-    if (renderObject.debugNeedsPaint) {
-      _requestWidgetSnapshots(<int>[page]);
-      return;
-    }
+    final pageData = _pageData(page)!;
+    final generation = _widgetSnapshotGeneration;
+    final captureToken = Object();
+    _widgetSnapshotInFlight[page] = captureToken;
+    var retryAfterPaint = false;
+    bool isCurrent() =>
+        mounted &&
+        generation == _widgetSnapshotGeneration &&
+        identical(_widgetSnapshotInFlight[page], captureToken) &&
+        identical(_pageData(page), pageData);
 
-    _widgetSnapshotInFlight.add(page);
     try {
-      final devicePixelRatio = View.of(captureContext).devicePixelRatio;
+      final prepare = pageData.prepareSnapshot;
+      if (prepare != null) {
+        await prepare(context).timeout(const Duration(seconds: 3));
+        if (!isCurrent()) return;
+        // FutureBuilder/Image can rebuild after the load completes. Allow
+        // their loading frame to be replaced and painted before toImage.
+        await WidgetsBinding.instance.endOfFrame;
+        if (!isCurrent()) return;
+        await WidgetsBinding.instance.endOfFrame;
+        if (!isCurrent()) return;
+      }
+
+      RenderRepaintBoundary? renderObject;
+      for (final key in <GlobalKey?>[
+        _visibleWidgetCaptureKeys[page],
+        _widgetCaptureKeys[page],
+      ]) {
+        final candidateContext = key?.currentContext;
+        if (candidateContext == null) continue;
+        try {
+          final candidate = candidateContext.findRenderObject();
+          if (candidate is RenderRepaintBoundary &&
+              candidate.attached &&
+              candidate.hasSize) {
+            renderObject = candidate;
+            break;
+          }
+        } on FlutterError {
+          // A page can switch capture hosts while its content is loading.
+        }
+      }
+      if (renderObject == null) {
+        retryAfterPaint = true;
+        return;
+      }
+      if (prepare != null) {
+        // A ready page may just have moved to a new capture host. That new
+        // FutureBuilder/Image also needs a painted frame of its own.
+        await WidgetsBinding.instance.endOfFrame;
+        if (!isCurrent()) return;
+      }
+      if (!renderObject.attached ||
+          !renderObject.hasSize ||
+          (kDebugMode && renderObject.debugNeedsPaint)) {
+        retryAfterPaint = true;
+        return;
+      }
+
+      final devicePixelRatio = View.of(context).devicePixelRatio;
       final pixelRatio = (devicePixelRatio * (_zoom > 1 ? 1.2 : 1.0)).clamp(
         1.0,
         3.0,
       );
       final image = await renderObject.toImage(pixelRatio: pixelRatio);
-      if (!mounted) {
+      if (!isCurrent()) {
         image.dispose();
         return;
       }
@@ -1416,9 +1482,16 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
         _widgetSnapshotUpdatedAt[page] = DateTime.now();
       });
     } catch (_) {
-      // Keep rendering resilient if snapshot capture fails.
+      // A failed load must not turn a loading frame into a ready texture.
     } finally {
-      _widgetSnapshotInFlight.remove(page);
+      if (identical(_widgetSnapshotInFlight[page], captureToken)) {
+        _widgetSnapshotInFlight.remove(page);
+        if (retryAfterPaint &&
+            mounted &&
+            generation == _widgetSnapshotGeneration) {
+          _requestWidgetSnapshots(<int>[page]);
+        }
+      }
     }
   }
 
@@ -1438,8 +1511,9 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
 
     _widgetSnapshotProviders.removeWhere((key, _) => !keep.contains(key));
     _widgetCaptureKeys.removeWhere((key, _) => !keep.contains(key));
+    _visibleWidgetCaptureKeys.removeWhere((key, _) => !keep.contains(key));
     _widgetSnapshotQueued.removeWhere((key) => !keep.contains(key));
-    _widgetSnapshotInFlight.removeWhere((key) => !keep.contains(key));
+    _widgetSnapshotInFlight.removeWhere((key, _) => !keep.contains(key));
     _widgetSnapshotUpdatedAt.removeWhere((key, _) => !keep.contains(key));
   }
 
@@ -1448,7 +1522,7 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
       return;
     }
     if (_widgetSnapshotProviders.containsKey(page) ||
-        _widgetSnapshotInFlight.contains(page) ||
+        _widgetSnapshotInFlight.containsKey(page) ||
         _widgetSnapshotQueued.contains(page)) {
       return;
     }
@@ -1500,13 +1574,25 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
     return _widgetSnapshotProviders.containsKey(page);
   }
 
-  Set<int> _criticalPagesNeedingTexture(int? frontPage, int? backPage) {
+  Set<int> _criticalPagesNeedingTexture(
+    _FlipDirection direction,
+    int? frontPage,
+    int? backPage,
+  ) {
     final pages = <int>{};
     if (_pageNeedsWidgetTexture(frontPage) && frontPage != null) {
       pages.add(frontPage);
     }
     if (_pageNeedsWidgetTexture(backPage) && backPage != null) {
       pages.add(backPage);
+    }
+    // In a spread the page under the turning sheet is different from its
+    // back. It must also be prepared before the animation reveals it.
+    if (_displayedPages == 2) {
+      final revealedPage = direction == _forwardDirection
+          ? _currentPage + _displayedPages + 1
+          : _currentPage - _displayedPages;
+      if (_pageNeedsWidgetTexture(revealedPage)) pages.add(revealedPage);
     }
     return pages;
   }
@@ -1627,12 +1713,12 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
     }
   }
 
-  Future<bool> _waitForCriticalTextures(Set<int> pages) async {
+  Future<bool> _waitForCriticalTextures(Set<int> pages, int token) async {
     if (pages.isEmpty) {
       return true;
     }
     final deadline = DateTime.now().add(const Duration(milliseconds: 280));
-    while (mounted) {
+    while (mounted && token == _flipPreparationToken) {
       final ready = pages.every(_pageTextureReadyForFlip);
       if (ready) {
         return true;
@@ -1657,11 +1743,9 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
     int? frontPage,
     int? backPage,
   ) async {
-    final capturePages = <int>{
-      if (frontPage != null && _pageIsWidget(frontPage)) frontPage,
-      if (backPage != null && _pageIsWidget(backPage)) backPage,
-    };
-    final criticalPages = _criticalPagesNeedingTexture(frontPage, backPage);
+    final criticalPages =
+        _criticalPagesNeedingTexture(direction, frontPage, backPage);
+    final capturePages = criticalPages;
 
     if (_flipPreparationInProgress &&
         _pendingFlipDirection == direction &&
@@ -1693,7 +1777,7 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
     }
     _emitDiagnostics(event: 'prepare-start', log: true);
 
-    final ready = await _waitForCriticalTextures(criticalPages);
+    final ready = await _waitForCriticalTextures(criticalPages, token);
     final startedAt = _flipPreparationStartedAt;
     _lastPreparationDuration =
         startedAt == null ? null : DateTime.now().difference(startedAt);
@@ -1813,7 +1897,8 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
       return;
     }
 
-    final criticalPages = _criticalPagesNeedingTexture(frontPage, backPage);
+    final criticalPages =
+        _criticalPagesNeedingTexture(direction, frontPage, backPage);
     if (criticalPages.isNotEmpty) {
       if (widget.snapshotPreparationMode ==
           FlipbookSnapshotPreparationMode.instantFallback) {
@@ -2909,6 +2994,7 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
             (pageHeight - _lastWidgetCaptureHeight).abs() > 0.5) {
           _lastWidgetCaptureWidth = pageWidth;
           _lastWidgetCaptureHeight = pageHeight;
+          _widgetSnapshotGeneration += 1;
           _widgetSnapshotProviders.clear();
           _widgetSnapshotQueued.clear();
           _widgetSnapshotInFlight.clear();
@@ -2966,7 +3052,7 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
         final needsWidgetSnapshotRequest = widgetCapturePages.any(
           (page) =>
               !_widgetSnapshotProviders.containsKey(page) &&
-              !_widgetSnapshotInFlight.contains(page) &&
+              !_widgetSnapshotInFlight.containsKey(page) &&
               !_widgetSnapshotQueued.contains(page),
         );
         if (needsWidgetSnapshotRequest) {
@@ -3245,8 +3331,9 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
     required double height,
   }) {
     final pageData = _pageData(pageIndex);
-    final captureKey =
-        pageData?.widgetBuilder != null ? _captureKeyForPage(pageIndex) : null;
+    final captureKey = pageData?.widgetBuilder != null
+        ? _visibleCaptureKeyForPage(pageIndex)
+        : null;
     return Positioned(
       left: left,
       top: top,

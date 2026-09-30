@@ -104,6 +104,30 @@ final pages = <FlipbookPage?>[
 ];
 ```
 
+### Asynchronous widget content
+
+For pages that load images or data asynchronously, provide `prepareSnapshot`
+with the same resources used by the page widget:
+
+```dart
+FlipbookPage(
+  sizeHint: const Size(1000, 1414),
+  prepareSnapshot: (context) async {
+    await precacheImage(pageImage, context);
+    await loadPageData();
+  },
+  widgetBuilder: (context) => PageContent(image: pageImage),
+)
+```
+
+The engine prepares nearby pages in the background and waits for loaded
+content to paint before caching a texture. Use
+`snapshotPreparationMode: FlipbookSnapshotPreparationMode.instantFallback`
+on the book to start turns immediately with live page content while captures
+are pending. Preparation never cancels a turn. `waitForTextures` retains its
+short (280 ms) preparation window before falling back to live content.
+Pending captures are discarded when pages or capture dimensions change.
+
 ## Gesture Integration
 
 If your page widgets handle their own taps/presses, enable gesture pass-through:
