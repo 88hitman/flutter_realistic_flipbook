@@ -156,6 +156,49 @@ RealisticFlipbook(
 )
 ```
 
+## Physical Renderer
+
+`renderer: FlipbookRenderer.physical` replaces the rigid strips with a sheet
+of paper bound at the spine:
+
+- the paper first bows up, calm near the spine and bending more toward the
+  hand (diagonally from a corner or when the finger moves up or down); then
+  the whole leaf swings around the spine, curled almost into a half circle,
+  and lands on the other side;
+- completion thresholds compare finger travel, so a swipe decides the same
+  way as with the strips engine;
+- the held point stays under the finger, perspective included (in single-page
+  spread navigation the book slides in step with the finger, then finishes
+  its slide with the leaf once released);
+- a released page keeps the finger velocity, falls under its weight, slows
+  down on an air cushion and lands with a small bounce (`pagePhysics`);
+- fast turns bend the page more;
+- a soft shadow right below the lifted paper: none where it touches the
+  book, strongest just above it, fading as it rises;
+  show-through ink, binding shade, page-block edges, haptics
+  and an optional corner peek (`physicalStyle`);
+- one mesh per face drawn with `Canvas.drawVertices`; page widgets are not
+  rebuilt on every frame of a turn.
+
+```dart
+RealisticFlipbook(
+  pages: pages,
+  renderer: FlipbookRenderer.physical,
+  physicalStyle: const FlipbookPhysicalStyle(cornerPeek: true),
+  pagePhysics: const PageTurnPhysics(restitution: 0.1),
+);
+```
+
+Both renderers reuse page widgets across the frames of a turn (they are
+rebuilt when the parent rebuilds), and a released page starts at the
+finger's speed. With the physical renderer, a gesture or command arriving
+while a page is landing finishes that turn and starts the next one.
+
+The default stays `FlipbookRenderer.strips`. The physical renderer falls back
+to strips in plain single-page mode, landscape fill-width mode, with
+`bookChrome`, and while a page texture is not ready yet. `flipDuration` sets
+when an unassisted turn touches down (at 80% of it).
+
 ## Core API
 
 ### `RealisticFlipbook`

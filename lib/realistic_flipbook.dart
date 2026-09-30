@@ -7,6 +7,14 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/physics.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/services.dart';
+
+import 'src/physical/page_curl_geometry.dart';
+import 'src/physical/page_turn_simulation.dart';
+import 'src/physical/physical_page_painter.dart';
+
+export 'src/physical/page_turn_simulation.dart' show PageTurnPhysics;
+export 'src/physical/physical_page_painter.dart' show FlipbookPhysicalStyle;
 
 typedef FlipbookPageCallback = void Function(int page);
 typedef FlipbookZoomCallback = void Function(double zoom);
@@ -31,6 +39,21 @@ enum FlipbookNavigationPhase { idle, preparation, flip, slide }
 enum FlipbookSnapshotPreparationMode { waitForTextures, instantFallback }
 
 enum FlipbookAutoPhysics { animationController, spring }
+
+/// How a turning page is drawn and animated.
+enum FlipbookRenderer {
+  /// Original engine: the page is cut into rigid strips rotating in 3D.
+  strips,
+
+  /// Paper rolled along a fold that follows the finger (straight or
+  /// diagonal), one mesh per face, velocity-preserving physics, cast shadows,
+  /// show-through, binding shade and page block.
+  ///
+  /// Falls back to [strips] in plain single-page mode, landscape fill-width
+  /// mode, with [RealisticFlipbook.bookChrome], or while a page texture is
+  /// not ready yet.
+  physical,
+}
 
 class FlipbookDiagnostics {
   const FlipbookDiagnostics({
@@ -212,6 +235,9 @@ class RealisticFlipbook extends StatefulWidget {
     this.onZoomStart,
     this.onZoomEnd,
     this.onFlipGuard,
+    this.renderer = FlipbookRenderer.strips,
+    this.physicalStyle = const FlipbookPhysicalStyle(),
+    this.pagePhysics = const PageTurnPhysics(),
   })  : assert(zooms.length > 0),
         assert(nPolygons > 0),
         assert(ambient >= 0 && ambient <= 1),
@@ -286,6 +312,14 @@ class RealisticFlipbook extends StatefulWidget {
   final FlipbookZoomCallback? onZoomStart;
   final FlipbookZoomCallback? onZoomEnd;
   final FlipbookFlipGuardCallback? onFlipGuard;
+
+  final FlipbookRenderer renderer;
+
+  /// Visual options of [FlipbookRenderer.physical].
+  final FlipbookPhysicalStyle physicalStyle;
+
+  /// Motion of a released page with [FlipbookRenderer.physical].
+  final PageTurnPhysics pagePhysics;
 
   @override
   State<RealisticFlipbook> createState() => _RealisticFlipbookState();
@@ -391,6 +425,35 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
   int _queuedNavigationDepth = 0;
   bool _consumingQueuedNavigation = false;
 
+  // Physical renderer. The grab point is leaf-local: distance from the spine
+  // and from the top of the page.
+  Offset? _grab;
+  bool _flipByFinger = false;
+  bool _physicalDragging = false;
+  double _grabDyBase = 0;
+  double _releaseDy = 0;
+  double _releaseProgress = 0;
+  double _physicalTarget = 1;
+  double _releasePan = 0;
+  double? _releaseVelocity;
+  double _progressVelocity = 0;
+  double _lastProgressValue = 0;
+  Duration _lastProgressTick = Duration.zero;
+  final Stopwatch _clock = Stopwatch()..start();
+  Duration _lastCenterTick = Duration.zero;
+  bool _tipHapticDone = false;
+  bool _landHapticDone = false;
+  Timer? _peekTimer;
+  // Page widgets rebuilt only when the parent rebuilds, not on every frame of
+  // a turn. Keyed by page index, separately for visible and capture hosts.
+  final Map<int, Widget> _visiblePageCache = <int, Widget>{};
+  final Map<int, Widget> _capturePageCache = <int, Widget>{};
+  final Map<int, Widget> _stripPageCache = <int, Widget>{};
+  final Map<ImageProvider, ui.Image> _providerImages =
+      <ImageProvider, ui.Image>{};
+  final Map<ImageProvider, (ImageStream, ImageStreamListener)>
+      _providerStreams = <ImageProvider, (ImageStream, ImageStreamListener)>{};
+
   @override
   void initState() {
     super.initState();
@@ -420,6 +483,10 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
   @override
   void didUpdateWidget(covariant RealisticFlipbook oldWidget) {
     super.didUpdateWidget(oldWidget);
+    // The parent rebuilt: page content may depend on its new state.
+    _visiblePageCache.clear();
+    _capturePageCache.clear();
+    _stripPageCache.clear();
     if (oldWidget.controller != widget.controller) {
       oldWidget.controller?._detach(this);
       widget.controller?._attach(this);
@@ -458,6 +525,15 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
   @override
   void dispose() {
     widget.controller?._detach(this);
+    _peekTimer?.cancel();
+    for (final entry in _providerStreams.values) {
+      entry.$1.removeListener(entry.$2);
+    }
+    _providerStreams.clear();
+    for (final image in _providerImages.values) {
+      image.dispose();
+    }
+    _providerImages.clear();
     _detachMetricListener();
     _stopNavigationWatchdog();
     for (final image in _widgetSnapshotProviders.values) {
@@ -653,7 +729,7 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
       _lastInteractionAt = DateTime.now();
       if (!canAttemptAnimatedRecovery) {
         _cancelFlip();
-      } else if (_flip.progress >= widget.flipThreshold) {
+      } else if (_flipDecisionProgress >= widget.flipThreshold) {
         _navigationWatchdogRecoveryAttempts += 1;
         unawaited(_flipAuto(ease: false));
       } else {
@@ -855,9 +931,10 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
       final toPage = _flip.backPage ?? fromPage;
       final from = _singleSideFactorForPage(fromPage);
       final to = _singleSideFactorForPage(toPage);
-      final t = Curves.easeInOut.transform(
-        _flip.progress.clamp(0.0, 1.0).toDouble(),
-      );
+      final progress = _flip.progress.clamp(0.0, 1.0).toDouble();
+      final t = _usePhysical
+          ? _physicalPanNow(progress)
+          : Curves.easeInOut.transform(progress);
       return from + (to - from) * t;
     }
     return _singleSideFactorForPage(_currentPage);
@@ -1818,10 +1895,7 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
     if (auto || _touchStart == null || _flip.direction != direction) {
       return;
     }
-    final progress = direction == _FlipDirection.left
-        ? (_dragDx / _pageWidth)
-        : (-_dragDx / _pageWidth);
-    _flipProgressController.value = progress.clamp(0.0, 1.0).toDouble();
+    _flipProgressController.value = _flipProgressForDrag(_dragDx);
   }
 
   void _flipLeft({required bool auto}) {
@@ -1854,6 +1928,9 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
     _FlipDirection direction, {
     required bool auto,
   }) {
+    if (_finishLandingTurn()) {
+      return false;
+    }
     final activeDirection = _flip.direction ?? _slide.direction;
     if (activeDirection == null) {
       return false;
@@ -1951,6 +2028,7 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
       _flip.frontProvider = frontProvider;
       _flip.backProvider = backProvider;
       _flip.auto = false;
+      _initPhysicalGrab(auto: auto);
     });
     _emitDiagnostics(event: 'flip-start', log: true);
 
@@ -2096,6 +2174,29 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
     required Duration duration,
     required Curve curve,
   }) {
+    if (_usePhysical && _flip.direction != null) {
+      return _animatePhysicalFlipTo(target);
+    }
+    if (_usePhysical && _slide.direction != null) {
+      final velocity = _releaseVelocity ?? 0;
+      _releaseVelocity = null;
+      final simulation = SpringSimulation(
+        SpringDescription.withDampingRatio(
+          mass: 1,
+          stiffness: 260,
+          ratio: 1,
+        ),
+        _flipProgressController.value,
+        target,
+        velocity,
+        tolerance: const Tolerance(distance: 0.0005, velocity: 0.01),
+      );
+      return _flipProgressController.animateWith(simulation);
+    }
+    // A page let go by the finger keeps its speed, then eases in. Taps and
+    // programmatic turns keep their curve.
+    final releaseVelocity = _releaseVelocity;
+    _releaseVelocity = null;
     if (widget.autoPhysics == FlipbookAutoPhysics.spring) {
       final simulation = SpringSimulation(
         SpringDescription.withDampingRatio(
@@ -2105,9 +2206,19 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
         ),
         _flipProgressController.value,
         target,
-        0,
+        releaseVelocity ?? 0,
       );
       return _flipProgressController.animateWith(simulation);
+    }
+    if (releaseVelocity != null && duration > Duration.zero) {
+      return _flipProgressController.animateWith(
+        _HandoffSimulation(
+          start: _flipProgressController.value,
+          velocity: releaseVelocity,
+          end: target,
+          duration: duration.inMicroseconds / 1e6,
+        ),
+      );
     }
     return _flipProgressController.animateTo(
       target,
@@ -2322,6 +2433,9 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
       return;
     }
     final value = _flipProgressController.value.clamp(0.0, 1.0);
+    if (_usePhysical) {
+      _trackProgress(value.toDouble());
+    }
     if (_flip.direction != null) {
       if ((value - _flip.progress).abs() < 1e-6) {
         return;
@@ -2580,6 +2694,7 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
 
   void _startSwipe(Offset local) {
     _lastGestureStartedAt = DateTime.now();
+    _finishLandingTurn();
     _resetNavigationIfStuck();
     _markInteraction();
     if (!_navigationInProgress && _queuedNavigationDepth > 0) {
@@ -2596,6 +2711,7 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
     _landscapeGestureMode = _LandscapeGestureMode.undecided;
     _startScrollLeft = _scrollLeftLimited;
     _startScrollTop = _scrollTopLimited;
+    _scheduleCornerPeek(local);
     if (widget.interruptibleFlips &&
         (_flip.auto || _slide.auto || _flipProgressController.isAnimating)) {
       _interruptedNavigationDrag = true;
@@ -2605,10 +2721,17 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
       final activeDirection = _flip.direction ?? _slide.direction;
       final progress =
           _flip.direction != null ? _flip.progress : _slide.progress;
-      if (activeDirection == _FlipDirection.left) {
+      if (_flip.direction != null) {
+        _dragDx = _dragDxForProgress(progress);
+      } else if (activeDirection == _FlipDirection.left) {
         _dragDx = progress * _pageWidth;
       } else if (activeDirection == _FlipDirection.right) {
         _dragDx = -progress * _pageWidth;
+      }
+      if (_flip.direction != null && _usePhysical) {
+        _grabDyBase = _physicalTargetDy(progress);
+        _physicalDragging = true;
+        _flipByFinger = true;
       }
       _emitDiagnostics(event: 'interrupt-drag', log: true);
     }
@@ -2705,7 +2828,7 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
         }
       }
       if (_flip.direction == _FlipDirection.left) {
-        final progress = (x / _pageWidth).clamp(0.0, 1.0).toDouble();
+        final progress = _flipProgressForDrag(x);
         _flipProgressController.value = progress;
       } else if (_slide.direction == _FlipDirection.left) {
         final progress = (x / _pageWidth).clamp(0.0, 1.0).toDouble();
@@ -2725,7 +2848,7 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
         }
       }
       if (_flip.direction == _FlipDirection.right) {
-        final progress = (-x / _pageWidth).clamp(0.0, 1.0).toDouble();
+        final progress = _flipProgressForDrag(x);
         _flipProgressController.value = progress;
       } else if (_slide.direction == _FlipDirection.right) {
         final progress = (-x / _pageWidth).clamp(0.0, 1.0).toDouble();
@@ -2863,6 +2986,8 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
       return;
     }
     _markInteraction();
+    _peekTimer?.cancel();
+    _captureRelease(velocityX);
 
     if (!widget.allowPageWidgetGestures &&
         widget.clickToZoom &&
@@ -2913,7 +3038,7 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
           : velocityX < -threshold;
       final shouldComplete = hasIntentionalRelease
           ? forwardFling
-          : _flip.progress >= widget.flipThreshold;
+          : _flipDecisionProgress >= widget.flipThreshold;
       if (shouldComplete) {
         if (forwardFling && widget.multiPageFling) {
           _queueAdditionalNavigation(
@@ -3001,13 +3126,26 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
           _widgetSnapshotUpdatedAt.clear();
         }
 
-        final polygonFrame = _buildPolygonFrame(
+        final physicalFlip = _buildPhysicalFlip(
           pageWidth: pageWidth,
           pageHeight: pageHeight,
           xMargin: xMargin,
           yMargin: yMargin,
-          polygonWidth: polygonWidth,
         );
+        final polygonFrame = physicalFlip != null
+            ? _PolygonFrame(
+                strips: const <_StripRender>[],
+                minX: physicalFlip.frame.minX,
+                maxX: physicalFlip.frame.maxX,
+                opacity: 1,
+              )
+            : _buildPolygonFrame(
+                pageWidth: pageWidth,
+                pageHeight: pageHeight,
+                xMargin: xMargin,
+                yMargin: yMargin,
+                polygonWidth: polygonWidth,
+              );
 
         final useSingleSpreadLayout = _singleSpreadNavigationEnabled;
         final singleCameraFactor =
@@ -3121,7 +3259,7 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
           if (diff.abs() < 0.5) {
             _currentCenterOffset = centerTarget;
           } else {
-            _currentCenterOffset += diff * 0.1;
+            _currentCenterOffset += diff * _centeringStep();
           }
         }
 
@@ -3131,6 +3269,15 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
         _lastYMargin = yMargin;
         _clampScroll();
 
+        final spreadSpineX =
+            useSingleSpreadLayout ? singleRightPos : _viewWidth / 2;
+        final leftSlotVisible = useSingleSpreadLayout
+            ? showSingleLeft
+            : !hideFixedPageDuringFlip && _showLeftPage;
+        final rightSlotVisible = useSingleSpreadLayout
+            ? showSingleRight
+            : !hideFixedPageDuringFlip && _showRightPage;
+
         final contentChildren = <Widget>[
           if (widgetOverlayPages.isNotEmpty)
             _buildWidgetCaptureOverlay(
@@ -3138,6 +3285,24 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
               pageWidth: pageWidth,
               pageHeight: pageHeight,
               left: xMargin,
+              top: yMargin,
+            ),
+          if (_usePhysical && widget.physicalStyle.bookBlock)
+            _buildBookBody(
+              leftPage: leftSlotVisible
+                  ? Rect.fromLTWH(
+                      useSingleSpreadLayout ? singleLeftPos : xMargin,
+                      yMargin,
+                      pageWidth,
+                      pageHeight,
+                    )
+                  : null,
+              rightPage: rightSlotVisible
+                  ? Rect.fromLTWH(spreadSpineX, yMargin, pageWidth, pageHeight)
+                  : null,
+              spineX: spreadSpineX,
+              pageWidth: pageWidth,
+              pageHeight: pageHeight,
               top: yMargin,
             ),
           if (useSingleSpreadLayout && showSingleLeft)
@@ -3176,7 +3341,9 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
               width: pageWidth,
               height: pageHeight,
             ),
-          if (_flip.direction != null && polygonFrame.strips.isEmpty)
+          if (_flip.direction != null &&
+              physicalFlip == null &&
+              polygonFrame.strips.isEmpty)
             _buildFallbackFlipLayer(
               pageWidth: pageWidth,
               pageHeight: pageHeight,
@@ -3196,6 +3363,31 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
                       pageHeight: pageHeight,
                     ),
                 ],
+              ),
+            ),
+          if (_usePhysical && widget.physicalStyle.gutterShadow > 0)
+            _buildGutter(
+              spineX: spreadSpineX,
+              top: yMargin,
+              pageWidth: pageWidth,
+              pageHeight: pageHeight,
+              leftPage: leftSlotVisible,
+              rightPage: rightSlotVisible,
+            ),
+          if (physicalFlip != null)
+            Positioned.fill(
+              child: IgnorePointer(
+                child: CustomPaint(
+                  painter: PhysicalPagePainter(
+                    frame: physicalFlip.frame,
+                    frontImage: physicalFlip.front,
+                    backImage: physicalFlip.back,
+                    paperColor: widget.paperColor,
+                    ambient: widget.ambient,
+                    gloss: widget.gloss,
+                    style: widget.physicalStyle,
+                  ),
+                ),
               ),
             ),
           if (!widget.allowPageWidgetGestures)
@@ -3309,12 +3501,16 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
             fit: StackFit.expand,
             children: <Widget>[
               for (final page in pages)
-                _buildImage(
-                  provider: null,
-                  pageData: _pageData(page),
-                  filterQuality: FilterQuality.none,
-                  allowLiveWidget: true,
-                  widgetCaptureKey: _captureKeyForPage(page),
+                _cachedPageChild(
+                  _capturePageCache,
+                  page,
+                  () => _buildImage(
+                    provider: null,
+                    pageData: _pageData(page),
+                    filterQuality: FilterQuality.none,
+                    allowLiveWidget: true,
+                    widgetCaptureKey: _captureKeyForPage(page),
+                  ),
                 ),
             ],
           ),
@@ -3339,13 +3535,17 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
       top: top,
       width: width,
       height: height,
-      child: _buildImage(
-        provider: _pageProvider(pageIndex, hiRes: true),
-        pageData: pageData,
-        filterQuality: FilterQuality.high,
-        allowLiveWidget: true,
-        rawImage: _pageRawImage(pageIndex),
-        widgetCaptureKey: captureKey,
+      child: _cachedPageChild(
+        _visiblePageCache,
+        pageIndex,
+        () => _buildImage(
+          provider: _pageProvider(pageIndex, hiRes: true),
+          pageData: pageData,
+          filterQuality: FilterQuality.high,
+          allowLiveWidget: true,
+          rawImage: _pageRawImage(pageIndex),
+          widgetCaptureKey: captureKey,
+        ),
       ),
     );
   }
@@ -3602,13 +3802,27 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
               child: SizedBox(
                 width: pageWidth,
                 height: pageHeight,
-                child: _buildImage(
-                  provider: strip.provider,
-                  pageData: strip.pageData,
-                  filterQuality: FilterQuality.none,
-                  allowLiveWidget: useLiveWidgetFallback,
-                  rawImage: strip.rawImage,
-                ),
+                // Every strip shows the same page content: while the page is
+                // live, share one widget so strips do not rebuild it each
+                // frame. Bilinear sampling keeps text from shimmering.
+                child: useLiveWidgetFallback && strip.page != null
+                    ? _cachedPageChild(
+                        _stripPageCache,
+                        strip.page!,
+                        () => _buildImage(
+                          provider: null,
+                          pageData: strip.pageData,
+                          filterQuality: FilterQuality.low,
+                          allowLiveWidget: true,
+                        ),
+                      )
+                    : _buildImage(
+                        provider: strip.provider,
+                        pageData: strip.pageData,
+                        filterQuality: FilterQuality.low,
+                        allowLiveWidget: useLiveWidgetFallback,
+                        rawImage: strip.rawImage,
+                      ),
               ),
             ),
           ),
@@ -3997,6 +4211,7 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
         _StripRender(
           id: '${face.name}$i',
           index: i,
+          page: page,
           pageData: pageData,
           provider: provider,
           rawImage: rawImage,
@@ -4107,7 +4322,686 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
     return x > maxX ? x : maxX;
   }
 
+  // ---------------------------------------------------------------------
+  // Physical renderer
+  // ---------------------------------------------------------------------
+
+  bool get _usePhysical =>
+      widget.renderer == FlipbookRenderer.physical &&
+      !widget.bookChrome &&
+      (_displayedPages == 2 || _singleSpreadNavigationEnabled);
+
+  /// Share of the single-page camera pan for a finger moved by [dx]: the
+  /// book slides in step with the finger, over one page width.
+  double _panForDrag(double dx) {
+    if (_displayedPages == 2) {
+      return 0;
+    }
+    final sign = _flip.direction == _FlipDirection.right ? -1.0 : 1.0;
+    return (sign * dx / _pageWidth).clamp(0.0, 1.0).toDouble();
+  }
+
+  /// Camera pan while the leaf is at [progress]: tied to the finger while it
+  /// holds the page, then carried on by the page's own motion to the end.
+  double _physicalPanNow(double progress) {
+    if (_physicalDragging) {
+      return _panForDrag(_dragDx);
+    }
+    final span = _physicalTarget - _releaseProgress;
+    final q = span.abs() < 1e-3
+        ? 1.0
+        : ((progress - _releaseProgress) / span).clamp(0.0, 1.0).toDouble();
+    return _releasePan + (_physicalTarget - _releasePan) * q;
+  }
+
+  /// Turn progress that brings the grabbed point under a finger moved by
+  /// [dx] since the turn started.
+  double _flipProgressForDrag(double dx) {
+    final direction = _flip.direction;
+    if (direction == null) {
+      return 0;
+    }
+    final sign = direction == _FlipDirection.left ? 1.0 : -1.0;
+    if (!_usePhysical || _grab == null) {
+      return (sign * dx / _pageWidth).clamp(0.0, 1.0).toDouble();
+    }
+    // With the camera where the finger puts it, walk the grabbed point's
+    // on-screen track and keep its furthest reach, so the finger always maps
+    // to one pose.
+    const samples = 96;
+    final pan = _panForDrag(dx);
+    final origin = _grabScreenX(0, pan: 0);
+    final wanted = sign * dx;
+    var previousReach = sign * (_grabScreenX(0, pan: pan) - origin);
+    if (previousReach >= wanted) {
+      return 0;
+    }
+    var reach = previousReach;
+    for (var i = 1; i <= samples; i++) {
+      final p = i / samples;
+      reach = math.max(reach, sign * (_grabScreenX(p, pan: pan) - origin));
+      if (reach >= wanted) {
+        final span = reach - previousReach;
+        final t = span <= 1e-9 ? 1.0 : (wanted - previousReach) / span;
+        return ((i - 1 + t.clamp(0.0, 1.0)) / samples).clamp(0.0, 1.0);
+      }
+      previousReach = reach;
+    }
+    return 1;
+  }
+
+  /// Finger displacement over the whole turn.
+  double get _flipCourse {
+    final sign = _flip.direction == _FlipDirection.right ? -1.0 : 1.0;
+    if (!_usePhysical || _grab == null || _flip.direction == null) {
+      return sign * _pageWidth;
+    }
+    return _grabScreenX(1, pan: 1) - _grabScreenX(0, pan: 0);
+  }
+
+  /// Ends at once a physical turn that is only settling on its destination.
+  ///
+  /// The air cushion and the small bounce are for the eye: a new gesture or
+  /// command must start the next turn, not catch the page that is landing.
+  bool _finishLandingTurn() {
+    final direction = _flip.direction;
+    if (!_usePhysical ||
+        direction == null ||
+        _physicalDragging ||
+        !_flipProgressController.isAnimating ||
+        (_physicalTarget - _flipProgressController.value).abs() > 0.12) {
+      return false;
+    }
+    _flipProgressController.stop();
+    if (_physicalTarget >= 1) {
+      _completeFlip(direction);
+    } else {
+      _cancelFlip();
+    }
+    return true;
+  }
+
+  /// Share of the finger's full course already travelled.
+  ///
+  /// Completion thresholds compare finger travel, like the strips engine,
+  /// so a given swipe decides the same way whatever the paper does.
+  double get _flipDecisionProgress {
+    if (!_usePhysical || _grab == null || _flip.direction == null) {
+      return _flip.progress;
+    }
+    // Finger travel over one page width, exactly as the strips engine.
+    final sign = _flip.direction == _FlipDirection.left ? 1.0 : -1.0;
+    return (sign * _dragDx / _pageWidth).clamp(0.0, 1.0).toDouble();
+  }
+
+  /// Finger displacement that holds the grabbed point at [progress].
+  double _dragDxForProgress(double progress) {
+    final course = _flipCourse;
+    if (!_usePhysical || _grab == null || _flip.direction == null) {
+      return course * progress;
+    }
+    var lo = 0.0;
+    var hi = 1.0;
+    for (var i = 0; i < 22; i++) {
+      final mid = (lo + hi) / 2;
+      if (_flipProgressForDrag(course * mid) < progress) {
+        lo = mid;
+      } else {
+        hi = mid;
+      }
+    }
+    return course * (lo + hi) / 2;
+  }
+
+  double _grabScreenX(double progress, {required double pan}) {
+    final grab = _grab!;
+    final leaf = _leafFrame(
+      pageWidth: _pageWidth,
+      pageHeight: _pageHeight,
+      xMargin: _xMargin,
+      yMargin: _yMargin,
+      pan: pan,
+    )!;
+    final bend = PageBend.pose(
+      width: _pageWidth,
+      height: _pageHeight,
+      progress: progress,
+      bend: _physicalBend(progress, dragging: true),
+      grabY: grab.dy,
+    );
+    final (x, y, z) = bend.map(grab.dx, grab.dy);
+    return leaf.project(x, y, z).dx;
+  }
+
+  /// How far the free edge leads (positive) or trails the paper at the spine.
+  double _physicalBend(double progress, {bool? dragging}) {
+    final style = widget.physicalStyle;
+    final p = progress.clamp(0.0, 1.0).toDouble();
+    final envelope = math.pow(math.sin(math.pi * p), 0.6).toDouble();
+    // Close to a half circle mid-turn, as a sheet held by its edge.
+    final pulled = 2.9 * style.curl * envelope;
+    if (dragging ?? _physicalDragging) {
+      // A hand pulling the edge makes it lead the rest of the sheet.
+      return pulled;
+    }
+    // Once let go the sheet relaxes a little, and a fast one trails in the
+    // air. Both build up after the release so the shape never jumps.
+    final span = _physicalTarget - _releaseProgress;
+    final q = span.abs() < 1e-3
+        ? 1.0
+        : ((p - _releaseProgress) / span).clamp(0.0, 1.0).toDouble();
+    final settle = q * q * (3 - 2 * q);
+    final speed = _progressVelocity.clamp(-3.0, 3.0);
+    final lag = 0.18 * style.velocityCurl * speed * envelope;
+    final eased = math.min(1.0, q / 0.25);
+    return (pulled * (1 - 0.3 * settle) - lag * eased).clamp(-0.6, 3.1);
+  }
+
+  double get _physicsTimeScale {
+    final ms = widget.flipDuration.inMilliseconds;
+    if (ms <= 0) {
+      return 1;
+    }
+    final physics = widget.pagePhysics;
+    final reference = PageTurnSimulation(
+      start: 0,
+      velocity: physics.autoTossVelocity,
+      target: 1,
+      physics: physics,
+    ).landingTime;
+    if (!reference.isFinite || reference <= 0) {
+      return 1;
+    }
+    // Touch down at 80% of the requested duration; the air cushion and the
+    // small bounce fill the rest.
+    return reference / (ms * 0.8 / 1000);
+  }
+
+  LeafFrame? _leafFrame({
+    required double pageWidth,
+    required double pageHeight,
+    required double xMargin,
+    required double yMargin,
+    double? pan,
+  }) {
+    final direction = _flip.direction;
+    final front = _flip.frontPage;
+    if (direction == null || front == null) {
+      return null;
+    }
+    final double spineX;
+    final bool rightHanded;
+    if (_displayedPages == 2) {
+      spineX = _viewWidth / 2;
+      rightHanded = direction == _FlipDirection.right;
+    } else {
+      final double cameraFactor;
+      if (pan == null) {
+        cameraFactor = _singleSpreadCameraFactor();
+      } else {
+        final from = _singleSideFactorForPage(front);
+        final to = _singleSideFactorForPage(_flip.backPage ?? front);
+        cameraFactor = from + (to - from) * pan;
+      }
+      spineX = xMargin + (1 - cameraFactor) * pageWidth;
+      rightHanded = _isRightSidePage(front);
+    }
+    return LeafFrame(
+      spineX: spineX,
+      top: yMargin,
+      width: pageWidth,
+      height: pageHeight,
+      rightHanded: rightHanded,
+      viewCenter: Offset(_viewWidth / 2, _viewHeight / 2),
+      // The reader's eye sits closer than the strips' virtual camera.
+      perspective: widget.perspective * 0.75,
+    );
+  }
+
+  /// Screen x of the free edge of the leaf that [direction] would turn.
+  double? _leafOuterEdgeX(_FlipDirection direction) {
+    final front = _flipPagesForDirection(direction).frontPage;
+    if (front == null) {
+      return null;
+    }
+    final w = _pageWidth;
+    if (_displayedPages == 2) {
+      return direction == _FlipDirection.right
+          ? _viewWidth / 2 + w
+          : _viewWidth / 2 - w;
+    }
+    final cameraFactor = _singleSideFactorForPage(_currentPage);
+    final spineX = _xMargin + (1 - cameraFactor) * w;
+    return _isRightSidePage(front) ? spineX + w : spineX - w;
+  }
+
+  double _touchStackX(Offset local) =>
+      local.dx - (widget.allowPageWidgetGestures ? _currentCenterOffset : 0);
+
+  void _initPhysicalGrab({required bool auto}) {
+    _tipHapticDone = false;
+    _landHapticDone = false;
+    _releaseDy = 0;
+    _grabDyBase = 0;
+    _releaseProgress = 0;
+    _physicalTarget = 1;
+    _releasePan = 0;
+    _releaseVelocity = null;
+    _progressVelocity = 0;
+    _lastProgressValue = 0;
+    _lastProgressTick = _clock.elapsed;
+    if (!_usePhysical) {
+      _grab = null;
+      _flipByFinger = false;
+      _physicalDragging = false;
+      return;
+    }
+    final w = _pageWidth;
+    final h = _pageHeight;
+    final touch = _touchStart;
+    _flipByFinger = !auto && touch != null;
+    _physicalDragging = _flipByFinger;
+    final leaf = _leafFrame(
+      pageWidth: w,
+      pageHeight: h,
+      xMargin: _xMargin,
+      yMargin: _yMargin,
+    );
+    if (!_flipByFinger || leaf == null || touch == null) {
+      _grab = Offset(w, h * 0.82);
+      return;
+    }
+    final x = _touchStackX(touch);
+    final fromSpine = leaf.rightHanded ? x - leaf.spineX : leaf.spineX - x;
+    // On a single-page screen the book pans while turning; holding the
+    // outer edge is the only grip that can follow the finger 1:1.
+    _grab = Offset(
+      _displayedPages == 2 ? fromSpine.clamp(w * 0.4, w).toDouble() : w,
+      (touch.dy - _yMargin).clamp(0.0, h).toDouble(),
+    );
+  }
+
+  /// Vertical offset of the finger left once the page was released, fading
+  /// as the page settles so the fold straightens.
+  double _residualDy(double progress) {
+    final span = _physicalTarget - _releaseProgress;
+    final q = span.abs() < 1e-3
+        ? 1.0
+        : ((progress - _releaseProgress) / span).clamp(0.0, 1.0).toDouble();
+    return _releaseDy * (1 - q) * (1 - q);
+  }
+
+  double _physicalTargetDy(double progress) {
+    if (_physicalDragging) {
+      return _grabDyBase + _dragDy;
+    }
+    var dy = _residualDy(progress);
+    if (!_flipByFinger) {
+      // A turn without a finger leads with its lower corner.
+      dy -= _pageHeight * 0.09 * math.sin(math.pi * progress);
+    }
+    return dy;
+  }
+
+  void _captureRelease(double velocityX) {
+    final direction = _flip.direction ?? _slide.direction;
+    if (direction == null) {
+      return;
+    }
+    if (!_usePhysical) {
+      final signed = direction == _FlipDirection.left ? velocityX : -velocityX;
+      _releaseVelocity = signed / _pageWidth;
+      return;
+    }
+    if (_flip.direction != null) {
+      // The finger drives the pose through a non-linear track: its measured
+      // effect on progress is the speed to keep.
+      _releaseVelocity = _progressVelocity;
+      return;
+    }
+    final signed = direction == _FlipDirection.left ? velocityX : -velocityX;
+    _releaseVelocity = signed / _pageWidth;
+  }
+
+  Future<void> _animatePhysicalFlipTo(double target) {
+    final start = _flipProgressController.value;
+    final currentDy =
+        _physicalDragging ? _grabDyBase + _dragDy : _residualDy(start);
+    _releasePan = _physicalPanNow(start);
+    _physicalDragging = false;
+    _releaseDy = currentDy;
+    _releaseProgress = start;
+    _physicalTarget = target;
+    final physics = widget.pagePhysics;
+    final velocity = _releaseVelocity ??
+        (target >= start ? 1 : -1) * physics.autoTossVelocity;
+    _releaseVelocity = null;
+    final simulation = PageTurnSimulation(
+      start: start,
+      velocity: velocity,
+      target: target,
+      physics: physics,
+      timeScale: _physicsTimeScale,
+    );
+    return _flipProgressController.animateWith(simulation);
+  }
+
+  void _trackProgress(double value) {
+    final now = _clock.elapsed;
+    final dt = (now - _lastProgressTick).inMicroseconds / 1e6;
+    if (dt > 0.25) {
+      _progressVelocity = 0;
+    } else if (dt > 0) {
+      final instant = (value - _lastProgressValue) / dt;
+      final k = 1 - math.exp(-dt / 0.06);
+      _progressVelocity += (instant - _progressVelocity) * k;
+    }
+    if (_flip.direction != null && widget.physicalStyle.haptics) {
+      if (_physicalDragging &&
+          !_tipHapticDone &&
+          _lastProgressValue < 0.5 &&
+          value >= 0.5) {
+        _tipHapticDone = true;
+        HapticFeedback.selectionClick();
+      }
+      if (!_physicalDragging &&
+          !_landHapticDone &&
+          _physicalTarget == 1 &&
+          value >= 0.999) {
+        _landHapticDone = true;
+        HapticFeedback.lightImpact();
+      }
+    }
+    _lastProgressValue = value;
+    _lastProgressTick = now;
+  }
+
+  void _scheduleCornerPeek(Offset local) {
+    _peekTimer?.cancel();
+    if (!_usePhysical ||
+        !widget.physicalStyle.cornerPeek ||
+        !widget.dragToFlip ||
+        _navigationInProgress ||
+        _zoom > 1) {
+      return;
+    }
+    _peekTimer = Timer(const Duration(milliseconds: 320), () {
+      if (!mounted ||
+          _touchStart == null ||
+          _navigationInProgress ||
+          _maxMove >= widget.swipeMin ||
+          local.dy < _yMargin + _pageHeight * 0.72) {
+        return;
+      }
+      final x = _touchStackX(local);
+      for (final direction in _FlipDirection.values) {
+        final canFlip =
+            direction == _FlipDirection.left ? _canFlipLeft : _canFlipRight;
+        if (!canFlip || _shouldUseSinglePageSlide(direction)) {
+          continue;
+        }
+        final edge = _leafOuterEdgeX(direction);
+        if (edge == null || (x - edge).abs() > _pageWidth * 0.2) {
+          continue;
+        }
+        if (!_canStartFlip(direction, auto: false)) {
+          return;
+        }
+        _flipStart(direction, false);
+        if (_flip.direction != direction) {
+          return;
+        }
+        final peek = math.min(0.06, widget.flipThreshold * 0.6);
+        _dragDx = _dragDxForProgress(peek);
+        unawaited(
+          _flipProgressController
+              .animateTo(
+                peek,
+                duration: const Duration(milliseconds: 220),
+                curve: Curves.easeOutCubic,
+              )
+              .orCancel
+              .catchError((_) {}),
+        );
+        if (widget.physicalStyle.haptics) {
+          HapticFeedback.selectionClick();
+        }
+        return;
+      }
+    });
+  }
+
+  ui.Image? _physicalTexture(int page) {
+    final data = _pageData(page);
+    if (data == null) {
+      return null;
+    }
+    if (data.widgetBuilder != null) {
+      return _widgetSnapshotProviders[page];
+    }
+    final provider = _pageProvider(page);
+    return provider == null ? null : _providerImage(provider);
+  }
+
+  ui.Image? _providerImage(ImageProvider provider) {
+    final cached = _providerImages[provider];
+    if (cached != null) {
+      return cached;
+    }
+    if (_providerStreams.containsKey(provider)) {
+      return null;
+    }
+    final stream = provider.resolve(createLocalImageConfiguration(context));
+    late final ImageStreamListener listener;
+    listener = ImageStreamListener(
+      (info, _) {
+        stream.removeListener(listener);
+        _providerStreams.remove(provider);
+        if (!mounted) {
+          info.dispose();
+          return;
+        }
+        _providerImages[provider] = info.image.clone();
+        info.dispose();
+        while (_providerImages.length > 12) {
+          final oldest = _providerImages.keys.first;
+          _providerImages.remove(oldest)?.dispose();
+        }
+        // May be called synchronously while building.
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) {
+            setState(() {});
+          }
+        });
+      },
+      onError: (_, __) => stream.removeListener(listener),
+    );
+    _providerStreams[provider] = (stream, listener);
+    stream.addListener(listener);
+    return null;
+  }
+
+  ({CurlFrame frame, ui.Image front, ui.Image back})? _buildPhysicalFlip({
+    required double pageWidth,
+    required double pageHeight,
+    required double xMargin,
+    required double yMargin,
+  }) {
+    if (!_usePhysical) {
+      return null;
+    }
+    final frontPage = _flip.frontPage;
+    final backPage = _flip.backPage;
+    final grab = _grab;
+    if (frontPage == null || backPage == null || grab == null) {
+      return null;
+    }
+    final frontImage = _physicalTexture(frontPage);
+    final backImage = _physicalTexture(backPage);
+    final leaf = _leafFrame(
+      pageWidth: pageWidth,
+      pageHeight: pageHeight,
+      xMargin: xMargin,
+      yMargin: yMargin,
+    );
+    if (frontImage == null || backImage == null || leaf == null) {
+      return null;
+    }
+    final p = _flip.progress.clamp(0.0, 1.0).toDouble();
+    // A finger moving up or down turns the fold toward a corner.
+    final dy = _physicalTargetDy(p);
+    final tilt = math.atan(-dy / (pageWidth * 0.35));
+    final bend = PageBend.pose(
+      width: pageWidth,
+      height: pageHeight,
+      progress: p,
+      bend: _physicalBend(p),
+      grabY: grab.dy,
+      tilt: tilt,
+    );
+    return (
+      frame: CurlFrame.build(leaf: leaf, bend: bend),
+      front: frontImage,
+      back: backImage,
+    );
+  }
+
+  Widget _cachedPageChild(
+    Map<int, Widget> cache,
+    int page,
+    Widget Function() build,
+  ) {
+    if (!_pageIsWidget(page)) {
+      return build();
+    }
+    if (cache.length > 12) {
+      cache.clear();
+    }
+    return cache.putIfAbsent(page, build);
+  }
+
+  double _centeringStep() {
+    // 10% of the remaining gap per 60 Hz frame, whatever the display rate.
+    final now = _clock.elapsed;
+    final frames = ((now - _lastCenterTick).inMicroseconds / 16667)
+        .clamp(0.0, 6.0)
+        .toDouble();
+    _lastCenterTick = now;
+    return 1 - math.pow(0.9, frames).toDouble();
+  }
+
+  Widget _buildBookBody({
+    required Rect? leftPage,
+    required Rect? rightPage,
+    required double spineX,
+    required double pageWidth,
+    required double pageHeight,
+    required double top,
+  }) {
+    final total = math.max(1, widget.pages.length);
+    final turned = (_currentPage / total).clamp(0.0, 1.0).toDouble();
+    final remaining = 1 - turned;
+    final readOnRight =
+        widget.forwardDirection == FlipbookForwardDirection.left;
+    return Positioned.fill(
+      child: IgnorePointer(
+        child: CustomPaint(
+          painter: BookBodyPainter(
+            pages: (left: leftPage, right: rightPage),
+            spineX: spineX,
+            top: top,
+            pageWidth: pageWidth,
+            pageHeight: pageHeight,
+            paperColor: widget.paperColor,
+            style: widget.physicalStyle,
+            drawBlock: (
+              left: readOnRight ? remaining : turned,
+              right: readOnRight ? turned : remaining,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildGutter({
+    required double spineX,
+    required double top,
+    required double pageWidth,
+    required double pageHeight,
+    required bool leftPage,
+    required bool rightPage,
+  }) {
+    return Positioned.fill(
+      child: IgnorePointer(
+        child: CustomPaint(
+          painter: GutterPainter(
+            spineX: spineX,
+            top: top,
+            pageWidth: pageWidth,
+            pageHeight: pageHeight,
+            strength: widget.physicalStyle.gutterShadow,
+            leftPage: leftPage,
+            rightPage: rightPage,
+          ),
+        ),
+      ),
+    );
+  }
+
   double _degToRad(double deg) => deg / 180 * math.pi;
+}
+
+/// Carries a released page from the finger's speed to rest at [end].
+///
+/// A cubic Hermite curve: it starts at the release speed, so nothing jumps
+/// when the finger lets go, and arrives with zero speed, never overshooting.
+class _HandoffSimulation extends Simulation {
+  _HandoffSimulation({
+    required this.start,
+    required double velocity,
+    required this.end,
+    required double duration,
+  }) {
+    final delta = end - start;
+    // Only the speed toward the destination carries over.
+    final toward = delta == 0 ? 0.0 : math.max(0.0, velocity * delta.sign);
+    var time = math.max(duration, 0.08);
+    if (toward > 0) {
+      // Beyond this the curve would pass the destination and come back.
+      time = math.min(time, math.max(0.08, 3 * delta.abs() / toward));
+    }
+    _duration = time;
+    _velocity = toward * delta.sign;
+  }
+
+  final double start;
+  final double end;
+  late final double _duration;
+  late final double _velocity;
+
+  @override
+  double x(double time) {
+    final s = (time / _duration).clamp(0.0, 1.0);
+    final s2 = s * s;
+    final s3 = s2 * s;
+    return start * (2 * s3 - 3 * s2 + 1) +
+        _velocity * _duration * (s3 - 2 * s2 + s) +
+        end * (3 * s2 - 2 * s3);
+  }
+
+  @override
+  double dx(double time) {
+    final s = (time / _duration).clamp(0.0, 1.0);
+    final s2 = s * s;
+    return (start * (6 * s2 - 6 * s) +
+            _velocity * _duration * (3 * s2 - 4 * s + 1) +
+            end * (6 * s - 6 * s2)) /
+        _duration;
+  }
+
+  @override
+  bool isDone(double time) => time >= _duration;
 }
 
 class _FlipState {
@@ -4167,6 +5061,7 @@ class _StripRender {
   const _StripRender({
     required this.id,
     required this.index,
+    required this.page,
     required this.pageData,
     required this.provider,
     required this.rawImage,
@@ -4180,6 +5075,7 @@ class _StripRender {
 
   final String id;
   final int index;
+  final int? page;
   final FlipbookPage? pageData;
   final ImageProvider? provider;
   final ui.Image? rawImage;
