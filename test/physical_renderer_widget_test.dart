@@ -223,6 +223,65 @@ void main() {
     });
   }
 
+  testWidgets('a page lifted by a finger starts flat, without a jump',
+      (tester) async {
+    FlipbookDiagnostics? last;
+    tester.view.physicalSize = const Size(390, 760);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RealisticFlipbook(
+          pages: List<FlipbookPage?>.generate(
+            12,
+            (index) => FlipbookPage(
+              sizeHint: const Size(480, 760),
+              widgetBuilder: (_) => ColoredBox(color: Colors.primaries[index]),
+            ),
+          ),
+          startPage: 4,
+          forwardDirection: FlipbookForwardDirection.left,
+          allowPageWidgetGestures: true,
+          tapToFlip: false,
+          clickToZoom: false,
+          swipeMin: 18,
+          renderer: FlipbookRenderer.physical,
+          physicalStyle: const FlipbookPhysicalStyle(haptics: false),
+          enableDiagnostics: true,
+          onDiagnosticsChanged: (d) => last = d,
+        ),
+      ),
+    );
+    await _frames(tester, count: 20);
+
+    // A slow drag, 6 px per frame, as a reader lifting the page.
+    final progress = <double>[];
+    final gesture = await tester.startGesture(const Offset(40, 400));
+    var stamp = Duration.zero;
+    for (var k = 0; k < 16; k++) {
+      stamp += const Duration(milliseconds: 16);
+      await gesture.moveBy(const Offset(6, 0), timeStamp: stamp);
+      await tester.pump(const Duration(milliseconds: 16));
+      final d = last;
+      if (d != null && d.phase == FlipbookNavigationPhase.flip) {
+        progress.add(d.progress);
+      }
+    }
+    await gesture.up(timeStamp: stamp);
+    await _frames(tester, count: 120);
+
+    // ignore: avoid_print
+    print('progress while lifting: '
+        '${progress.map((p) => p.toStringAsFixed(4)).join(' ')}');
+    expect(progress, isNotEmpty);
+    // The turn starts where the page lies, not where the finger already is.
+    expect(progress.first, lessThan(0.005));
+    // Then the sheet lifts gradually: no frame of the lift takes a big step.
+    for (var i = 1; i < progress.length && progress[i] < 0.06; i++) {
+      expect(progress[i] - progress[i - 1], lessThan(0.02));
+    }
+  });
+
   testWidgets('a released page completes the turn', (tester) async {
     final controller = FlipbookController();
     tester.view.physicalSize = const Size(1000, 700);

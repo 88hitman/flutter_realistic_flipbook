@@ -435,6 +435,10 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
   bool _flipByFinger = false;
   bool _physicalDragging = false;
   double _grabDyBase = 0;
+
+  /// Finger travel already made when the turn started (see
+  /// [_physicalDragTravel]).
+  double _dragSlack = 0;
   double _releaseDy = 0;
   double _releaseProgress = 0;
   double _physicalTarget = 1;
@@ -2709,6 +2713,7 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
     _lastTouch = local;
     _dragDx = 0;
     _dragDy = 0;
+    _dragSlack = 0;
     _maxMove = 0;
     _blockedSwipeDirection = null;
     _interruptedNavigationDrag = false;
@@ -4367,7 +4372,7 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
   /// holds the page, then carried on by the page's own motion to the end.
   double _physicalPanNow(double progress) {
     if (_physicalDragging) {
-      return _panForDrag(_dragDx);
+      return _panForDrag(_physicalDragTravel(_dragDx));
     }
     final span = _physicalTarget - _releaseProgress;
     final q = span.abs() < 1e-3
@@ -4387,6 +4392,7 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
     if (!_usePhysical || _grab == null) {
       return (sign * dx / _pageWidth).clamp(0.0, 1.0).toDouble();
     }
+    dx = _physicalDragTravel(dx);
     // With the camera where the finger puts it, walk the grabbed point's
     // on-screen track and keep its furthest reach, so the finger always maps
     // to one pose.
@@ -4410,6 +4416,28 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
       previousReach = reach;
     }
     return 1;
+  }
+
+  /// Finger travel that drives the leaf for a finger moved by [dx].
+  ///
+  /// A turn only starts once the finger has moved `swipeMin`. Catching that
+  /// up in one frame made the leaf jump: the book slid that far one way
+  /// while the sheet curled up toward the finger the other way. The leaf
+  /// starts flat instead and is under the finger again after four times that
+  /// distance.
+  ///
+  /// The catch-up starts slowly on purpose: the sheet rises like the square
+  /// root of the travel (paper does not stretch), so an even start would
+  /// still lift it at once.
+  double _physicalDragTravel(double dx) {
+    final slack = _dragSlack.abs();
+    if (slack <= 0) {
+      return dx;
+    }
+    final sign = _dragSlack.sign;
+    final travel = sign * dx;
+    final q = ((travel - slack) / (slack * 4)).clamp(0.0, 1.0).toDouble();
+    return sign * travel * q * q * (3 - 2 * q);
   }
 
   /// Finger displacement over the whole turn.
@@ -4505,7 +4533,13 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
       grabY: grab.dy,
     );
     final (x, y, z) = bend.map(grab.dx, grab.dy);
-    return leaf.project(x, y, z).dx;
+    // Seen in perspective, a sheet lifting off the book first spreads
+    // outward faster than it curls inward: the finger's first pixels would
+    // map to a sudden lift. Perspective joins in as the sheet lifts instead,
+    // and the grabbed point is back under the finger once it swings.
+    final p = progress.clamp(0.0, 1.0).toDouble();
+    final q = (p / 0.25).clamp(0.0, 1.0).toDouble();
+    return leaf.project(x, y, z * q * q * (3 - 2 * q)).dx;
   }
 
   /// How far the free edge leads (positive) or trails the paper at the spine.
@@ -4618,6 +4652,7 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
     _landHapticDone = false;
     _releaseDy = 0;
     _grabDyBase = 0;
+    _dragSlack = 0;
     _releaseProgress = 0;
     _physicalTarget = 1;
     _releasePan = 0;
@@ -4636,6 +4671,9 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
     final touch = _touchStart;
     _flipByFinger = !auto && touch != null;
     _physicalDragging = _flipByFinger;
+    if (_flipByFinger) {
+      _dragSlack = _dragDx;
+    }
     final leaf = _leafFrame(
       pageWidth: w,
       pageHeight: h,
@@ -4787,6 +4825,7 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
           return;
         }
         final peek = math.min(0.06, widget.flipThreshold * 0.6);
+        _dragSlack = 0;
         _dragDx = _dragDxForProgress(peek);
         unawaited(
           _flipProgressController
