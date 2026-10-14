@@ -1429,7 +1429,12 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
       _widgetSnapshotQueued.add(page);
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _widgetSnapshotQueued.remove(page);
-        if (!mounted || !_pageIsWidget(page)) {
+        // A page left behind (the book moved on, or the start page was not
+        // applied yet) has no host to capture from: retrying it would ask
+        // for a frame forever.
+        if (!mounted ||
+            !_pageIsWidget(page) ||
+            !_widgetCaptureCandidates().contains(page)) {
           return;
         }
         unawaited(_captureWidgetSnapshot(page));
