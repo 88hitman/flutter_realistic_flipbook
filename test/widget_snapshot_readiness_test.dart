@@ -114,6 +114,42 @@ Future<void> _expectTextureColor(WidgetTester tester, Color color) async {
 }
 
 void main() {
+  testWidgets('captured hidden pages stay mounted but are not painted',
+      (tester) async {
+    final loads = List<Completer<void>>.generate(8, (_) => Completer<void>());
+    final prepared = <int>{};
+    for (var i = 0; i < loads.length; i++) {
+      if (i != 5) loads[i].complete();
+    }
+    await _book(
+      tester,
+      controller: FlipbookController(),
+      pages: _pages(loads, prepared: prepared),
+      diagnostics: (_) {},
+      startPage: 3,
+    );
+    await _frames(tester, count: 20);
+
+    final hosts = tester
+        .widgetList<Offstage>(find.byType(Offstage))
+        .where((host) => host.key is ValueKey<int>)
+        .toList();
+    expect(hosts.map((host) => host.key), contains(const ValueKey<int>(5)));
+    for (final host in hosts) {
+      final page = (host.key! as ValueKey<int>).value;
+      // A page still loading keeps being painted until it is captured.
+      expect(host.offstage, page != 5, reason: 'page $page');
+    }
+
+    loads[5].complete();
+    await _frames(tester, count: 20);
+    final page5 = tester
+        .widgetList<Offstage>(find.byType(Offstage))
+        .firstWhere((host) => host.key == const ValueKey<int>(5));
+    expect(page5.offstage, isTrue);
+    expect(tester.takeException(), isNull);
+  });
+
   for (final landscape in <bool>[false, true]) {
     for (final manual in <bool>[false, true]) {
       testWidgets(

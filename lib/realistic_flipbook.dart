@@ -398,6 +398,10 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
   final Map<int, GlobalKey> _visibleWidgetCaptureKeys = <int, GlobalKey>{};
   final Map<int, ui.Image> _widgetSnapshotProviders = <int, ui.Image>{};
   final Set<int> _widgetSnapshotQueued = <int>{};
+
+  /// Off-screen capture pages left unpainted in the last build: their
+  /// snapshot is ready and no capture needs them.
+  final Set<int> _offstageCapturePages = <int>{};
   final Map<int, Object> _widgetSnapshotInFlight = <int, Object>{};
   int _widgetSnapshotGeneration = 0;
   final Map<int, DateTime> _widgetSnapshotUpdatedAt = <int, DateTime>{};
@@ -1481,6 +1485,7 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
     final pageData = _pageData(page)!;
     final generation = _widgetSnapshotGeneration;
     final captureToken = Object();
+    final wasOffstage = _offstageCapturePages.contains(page);
     _widgetSnapshotInFlight[page] = captureToken;
     var retryAfterPaint = false;
     bool isCurrent() =>
@@ -1490,6 +1495,12 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
         identical(_pageData(page), pageData);
 
     try {
+      if (wasOffstage) {
+        // Paint the hidden page again before reading it back.
+        setState(() {});
+        await WidgetsBinding.instance.endOfFrame;
+        if (!isCurrent()) return;
+      }
       final prepare = pageData.prepareSnapshot;
       if (prepare != null) {
         await prepare(context).timeout(const Duration(seconds: 3));
@@ -3224,6 +3235,9 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
             if (!visibleFixedPages.contains(page)) page,
         }.toList()
           ..sort();
+        if (widgetOverlayPages.isEmpty) {
+          _offstageCapturePages.clear();
+        }
 
         final rawBoundingLeft =
             _computeBoundingLeft(polygonFrame.minX, xMargin);
@@ -3473,8 +3487,19 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
     required double top,
   }) {
     if (pages.isEmpty || pageWidth <= 0 || pageHeight <= 0) {
+      _offstageCapturePages.clear();
       return const SizedBox.shrink();
     }
+    // Hidden pages exist only to be captured. Once captured they stay
+    // mounted, so their content keeps loading, but are no longer painted:
+    // otherwise every frame of the book redraws all of them.
+    bool offstage(int page) =>
+        _widgetSnapshotProviders.containsKey(page) &&
+        !_widgetSnapshotInFlight.containsKey(page) &&
+        !_widgetSnapshotQueued.contains(page);
+    _offstageCapturePages
+      ..clear()
+      ..addAll(pages.where(offstage));
     return Positioned(
       left: left,
       top: top,
@@ -3489,15 +3514,19 @@ class _RealisticFlipbookState extends State<RealisticFlipbook>
             fit: StackFit.expand,
             children: <Widget>[
               for (final page in pages)
-                _cachedPageChild(
-                  _capturePageCache,
-                  page,
-                  () => _buildImage(
-                    provider: null,
-                    pageData: _pageData(page),
-                    filterQuality: FilterQuality.none,
-                    allowLiveWidget: true,
-                    widgetCaptureKey: _captureKeyForPage(page),
+                Offstage(
+                  key: ValueKey<int>(page),
+                  offstage: _offstageCapturePages.contains(page),
+                  child: _cachedPageChild(
+                    _capturePageCache,
+                    page,
+                    () => _buildImage(
+                      provider: null,
+                      pageData: _pageData(page),
+                      filterQuality: FilterQuality.none,
+                      allowLiveWidget: true,
+                      widgetCaptureKey: _captureKeyForPage(page),
+                    ),
                   ),
                 ),
             ],
