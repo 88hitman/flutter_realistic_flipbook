@@ -112,6 +112,14 @@ class PhysicalPagePainter extends CustomPainter {
     final paper = Paint()..color = paperColor;
     final frontTexture = _texture(frontImage);
     final backTexture = _texture(backImage);
+    final edge = style.paperEdge && lift > 0.5
+        ? (Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 0.8
+          ..isAntiAlias = true
+          ..color = Color.lerp(paperColor, const Color(0xFF000000), 0.28)!
+              .withValues(alpha: 0.55))
+        : null;
 
     // 1. The part of the leaf still lying flat.
     _drawMesh(
@@ -170,18 +178,11 @@ class PhysicalPagePainter extends CustomPainter {
         );
       }
       _shade(canvas, run.slices);
-    }
-
-    if (style.paperEdge && lift > 0.5) {
-      canvas.drawPath(
-        frame.paperEdges,
-        Paint()
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 0.8
-          ..isAntiAlias = true
-          ..color = Color.lerp(paperColor, const Color(0xFF000000), 0.28)!
-              .withValues(alpha: 0.55),
-      );
+      // Stroked with its run: paper drawn later hides it, so the border of
+      // paper behind the roll never shows through it.
+      if (edge != null) {
+        canvas.drawPath(run.edges, edge);
+      }
     }
   }
 

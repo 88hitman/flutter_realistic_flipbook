@@ -305,11 +305,20 @@ class BendSlice {
 
 /// Consecutive lifted slices showing the same face, drawn in one call.
 class BendRun {
-  BendRun({required this.front, required this.mesh, required this.slices});
+  BendRun({
+    required this.front,
+    required this.mesh,
+    required this.slices,
+    required this.edges,
+  });
 
   final bool front;
   final CurlMesh mesh;
   final List<BendSlice> slices;
+
+  /// Page borders of this run, stroked right after it so that paper drawn
+  /// later covers them like it covers the run itself.
+  final Path edges;
 }
 
 /// Everything the painter needs to draw one turning leaf.
@@ -321,7 +330,6 @@ class CurlFrame {
     required this.runs,
     required this.shadows,
     required this.bookRect,
-    required this.paperEdges,
     required this.maxLift,
     required this.minX,
     required this.maxX,
@@ -342,8 +350,6 @@ class CurlFrame {
   /// Both pages of the opening, where the shading may fall.
   final Rect bookRect;
 
-  /// Page borders of the lifted paper, stroked as a paper edge.
-  final Path paperEdges;
   final double maxLift;
   final double minX;
   final double maxX;
@@ -372,7 +378,6 @@ class CurlFrame {
         runs: const <BendRun>[],
         shadows: const <ShadowPatch>[],
         bookRect: Rect.zero,
-        paperEdges: Path(),
         maxLift: 0,
         minX: bounds.minX,
         maxX: bounds.maxX,
@@ -414,7 +419,7 @@ class CurlFrame {
     _MeshBuilder? runMesh;
     List<BendSlice>? runSlices;
     bool? runFront;
-    final edges = Path();
+    Path? runEdges;
     final shadows = <ShadowPatch>[];
     var maxLift = 0.0;
 
@@ -422,11 +427,20 @@ class CurlFrame {
       final mesh = runMesh;
       final slices = runSlices;
       final front = runFront;
+      final edges = runEdges;
       if (mesh != null &&
           slices != null &&
           front != null &&
+          edges != null &&
           slices.isNotEmpty) {
-        runs.add(BendRun(front: front, mesh: mesh.build(), slices: slices));
+        runs.add(
+          BendRun(
+            front: front,
+            mesh: mesh.build(),
+            slices: slices,
+            edges: edges,
+          ),
+        );
       }
     }
 
@@ -447,6 +461,7 @@ class CurlFrame {
         runFront = front;
         runMesh = _MeshBuilder(leaf, bend, bounds);
         runSlices = <BendSlice>[];
+        runEdges = Path();
       }
       runMesh!.addPolygon(poly);
       final projected = <Offset>[];
@@ -487,7 +502,7 @@ class CurlFrame {
         final a = poly[j];
         final b = poly[(j + 1) % poly.length];
         if (_onPageBorder(a, b, w, h)) {
-          edges
+          runEdges!
             ..moveTo(projected[j].dx, projected[j].dy)
             ..lineTo(
               projected[(j + 1) % poly.length].dx,
@@ -508,7 +523,6 @@ class CurlFrame {
         leaf.project(-w, 0, 0),
         leaf.project(w, h, 0),
       ),
-      paperEdges: edges,
       maxLift: maxLift,
       minX: bounds.minX,
       maxX: bounds.maxX,
